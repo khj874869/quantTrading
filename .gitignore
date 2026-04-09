@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+.pytest_cache/
+.mypy_cache/
+
+output/
+config/output/
+test_output/
+
+external/
+
+.env
+.venv/
+venv/

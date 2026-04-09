@@ -1,0 +1,4 @@
+symbol,publishedDate,newGrade,previousGrade,gradingCompany,action
+AAA,2025-01-10,Buy,Hold,Broker A,Upgrade
+AAA,2025-01-20,Strong Buy,Buy,Broker B,Upgrade
+BBB,2025-01-18,Hold,Buy,Broker C,Downgrade

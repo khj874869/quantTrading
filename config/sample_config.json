@@ -1,0 +1,80 @@
+{
+  "paths": {
+    "data_dir": "data",
+    "output_dir": "output",
+    "compustat_quarterly": "data/sample_compustat_quarterly.csv",
+    "crsp_daily": "data/sample_crsp_daily.csv",
+    "ccm_link": "data/sample_ccm_link.csv",
+    "ibes_link": "data/sample_ibes_link.csv",
+    "ibes_summary": "data/sample_ibes_summary.csv",
+    "ibes_surprise": "data/sample_ibes_surprise.csv",
+    "kpss_patent": "data/sample_kpss_patent.csv",
+    "ff_factors": "data/sample_ff_factors.csv",
+    "fred_dgs10": "data/sample_fred_dgs10.csv",
+    "cboe_vix": "data/sample_cboe_vix.csv",
+    "fmp_grades": "data/sample_fmp_grades.csv"
+  },
+  "api": {
+    "fred_api_key": "",
+    "fmp_api_key": "",
+    "fmp_symbols": ["AAA", "BBB"],
+    "cboe_vix_csv_url": "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+  },
+  "wrds": {
+    "host": "wrds-pgdata.wharton.upenn.edu",
+    "port": 9737,
+    "database": "wrds",
+    "sslmode": "require",
+    "username_env": "WRDS_USERNAME",
+    "password_env": "WRDS_PASSWORD",
+    "fetch_size": 5000,
+    "placeholders": {
+      "IBES_CRSP_LINK_TABLE": "wrdsapps.ibcrsphist",
+      "IBES_SUMMARY_TABLE": "ibes.statsum_epsus",
+      "IBES_SURPRISE_TABLE": "ibes.surpsum_epsus",
+      "KPSS_PATENT_TABLE": "kpss_us_patents",
+      "FF_DAILY_FACTORS_TABLE": "ff_all.factors_daily"
+    }
+  },
+  "cache": {
+    "enabled": true,
+    "cache_dir": "output/cache"
+  },
+  "strategy": {
+    "rebalance_frequency": "monthly",
+    "holding_count": 1,
+    "score_field": "risk_adjusted_score",
+    "long_short": false,
+    "use_rdq": true,
+    "sector_neutral": true,
+    "beta_neutral": true,
+    "benchmark_hedge": true,
+    "constraint_neutral": false,
+    "constraint_neutral_factors": ["beta", "downside_beta", "idio_vol", "size", "sector"],
+    "constraint_ridge": 1e-08,
+    "beta_method": "ols",
+    "beta_lookback_days": 126,
+    "beta_ewma_halflife_days": 63,
+    "min_beta_observations": 60,
+    "beta_shrinkage": 0.0,
+    "beta_shrinkage_target": 1.0,
+    "risk_penalty_downside_beta_weight": 0.15,
+    "risk_penalty_idio_vol_weight": 0.10,
+    "regime_risk_scaling_enabled": true,
+    "regime_vix_threshold": 30.0,
+    "regime_vix_penalty_multiplier": 1.5,
+    "regime_macro_threshold": 0.5,
+    "regime_macro_penalty_multiplier": 1.25,
+    "regime_penalty_cap": 2.5,
+    "top_quantile": 0.5,
+    "bottom_quantile": 0.5,
+    "report_lag_days": 45,
+    "transaction_cost_bps": 10.0,
+    "vix_de_risk_level": 30.0,
+    "vix_flatten_level": 40.0,
+    "min_price": 5.0,
+    "min_market_cap": 100000000.0,
+    "start_date": "2024-01-01",
+    "end_date": "2025-12-31"
+  }
+}
