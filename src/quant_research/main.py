@@ -8,17 +8,21 @@ from .config import Config
 from .data_sources import MarketDataFetcher
 from .exports import export_rebalance_signals
 from .pipeline import DataPipeline
+from .research import apply_recommended_config, run_parameter_sweep, run_walk_forward_optimization, write_applied_recommended_config
 from .strategy import MultiSignalStrategy
 from .wrds_runner import WRDSExportRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Quant research stack")
-    parser.add_argument("command", choices=["fetch", "signals", "backtest", "wrds-export"])
+    parser.add_argument("command", choices=["fetch", "signals", "backtest", "wrds-export", "sweep", "walk-forward", "apply-recommended"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--step")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--recommended-config")
+    parser.add_argument("--applied-config-output")
+    parser.add_argument("--target", choices=["signals", "backtest"], default="backtest")
     return parser
 
 
@@ -26,6 +30,18 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     config = Config.load(args.config)
+    effective_command = args.command
+    if args.command == "apply-recommended":
+        original_config = config
+        config = apply_recommended_config(config, args.recommended_config)
+        applied_config_path = write_applied_recommended_config(
+            original_config,
+            config,
+            recommendation_path=args.recommended_config,
+            output_path=args.applied_config_output,
+        )
+        print(applied_config_path)
+        effective_command = args.target
     if args.command == "fetch":
         outputs = MarketDataFetcher(config).fetch_all()
         for output in outputs:
@@ -35,6 +51,14 @@ def main() -> None:
         outputs = WRDSExportRunner(config).export(step=args.step, dry_run=args.dry_run)
         for output in outputs:
             print(output)
+        return
+    if effective_command == "sweep":
+        output_path = run_parameter_sweep(config)
+        print(output_path)
+        return
+    if effective_command == "walk-forward":
+        output_path = run_walk_forward_optimization(config)
+        print(output_path)
         return
     if args.no_cache:
         pipeline = DataPipeline(config)
@@ -49,7 +73,7 @@ def main() -> None:
         print(f"prepared_cache_hit={int(cache_result.prepared_cache_hit)}")
         _print_profile(cache_result.profile)
     output_dir = config.resolve_path(config.paths.get("output_dir", "output"))
-    if args.command == "signals":
+    if effective_command == "signals":
         output_path = export_rebalance_signals(prepared, output_dir)
         print(output_path)
         return

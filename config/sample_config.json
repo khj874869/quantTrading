@@ -40,6 +40,28 @@
     "enabled": true,
     "cache_dir": "output/cache"
   },
+  "sweep": {
+    "strategy_grid": {
+      "beta_method": ["ols", "ewma"],
+      "risk_penalty_downside_beta_weight": [0.0, 0.15],
+      "risk_penalty_idio_vol_weight": [0.0, 0.10]
+    }
+  },
+  "walk_forward": {
+    "selection_metric": "information_ratio",
+    "leaderboard_top_n": 3,
+    "leaderboard_sort_by": "consistency_score",
+    "leaderboard_min_selection_rate": 0.0,
+    "leaderboard_min_positive_window_rate": 0.0,
+    "windows": [
+      {
+        "train_start": "2024-01-01",
+        "train_end": "2025-03-31",
+        "test_start": "2025-04-01",
+        "test_end": "2025-04-30"
+      }
+    ]
+  },
   "strategy": {
     "rebalance_frequency": "monthly",
     "holding_count": 1,
