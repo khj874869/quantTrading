@@ -11,18 +11,47 @@ class PortfolioWeights:
     weights: dict[str, float]
     exposure: float
     diagnostics: dict[str, float] | None = None
+    selected_rows: list[dict] | None = None
+    metadata: dict[str, float] | None = None
+    target_weights: dict[str, float] | None = None
 
 
 class MultiSignalStrategy:
     def __init__(self, strategy_config: dict) -> None:
         self.config = strategy_config
         self.score_field = str(strategy_config.get("score_field", "risk_adjusted_score")).strip() or "risk_adjusted_score"
+        self.incumbent_score_bonus = max(float(strategy_config.get("incumbent_score_bonus", 0.0)), 0.0)
+        self.entry_score_threshold = max(float(strategy_config.get("entry_score_threshold", 0.0)), 0.0)
+        self.entry_score_threshold_dynamic_scale = max(float(strategy_config.get("entry_score_threshold_dynamic_scale", 0.0)), 0.0)
+        self.entry_turnover_penalty_per_weight = max(float(strategy_config.get("entry_turnover_penalty_per_weight", 0.0)), 0.0)
+        self.entry_liquidity_penalty_scale = max(float(strategy_config.get("entry_liquidity_penalty_scale", 0.0)), 0.0)
+        self.entry_liquidity_field = str(strategy_config.get("entry_liquidity_field", "liquidity_ratio")).strip() or "liquidity_ratio"
+        self.entry_liquidity_floor = max(float(strategy_config.get("entry_liquidity_floor", 0.01)), 1e-9)
+        weighting_scheme = str(strategy_config.get("weighting_scheme", "equal")).strip().lower() or "equal"
+        allowed_weighting_schemes = {"equal", "score", "inverse_vol", "score_inverse_vol"}
+        self.weighting_scheme = weighting_scheme if weighting_scheme in allowed_weighting_schemes else "equal"
+        self.risk_weight_field = str(strategy_config.get("risk_weight_field", "idio_vol")).strip() or "idio_vol"
+        self.risk_weight_floor = max(float(strategy_config.get("risk_weight_floor", 0.10)), 1e-6)
+        self.score_weight_floor = max(float(strategy_config.get("score_weight_floor", 0.05)), 1e-6)
+        self.max_position_weight = max(float(strategy_config.get("max_position_weight", 0.0)), 0.0)
+        self.liquidity_position_cap_ratio = max(float(strategy_config.get("liquidity_position_cap_ratio", 0.0)), 0.0)
+        self.liquidity_position_cap_field = str(strategy_config.get("liquidity_position_cap_field", "avg_dollar_volume")).strip() or "avg_dollar_volume"
+        self.liquidity_position_cap_floor = max(float(strategy_config.get("liquidity_position_cap_floor", strategy_config.get("slippage_adv_floor", 100_000.0))), 1.0)
+        self.liquidity_position_cap_notional = max(float(strategy_config.get("liquidity_position_cap_notional", strategy_config.get("slippage_notional", 1_000_000.0))), 1.0)
 
-    def build_weights(self, rebalance_date: date, rows: list[dict]) -> PortfolioWeights:
+    def build_weights(self, rebalance_date: date, rows: list[dict], previous_weights: dict[str, float] | None = None) -> PortfolioWeights:
+        previous_weights = previous_weights or {}
         ranked = sorted(rows, key=self._score_value, reverse=True)
         top_count = min(self.config.get("holding_count", 20), len(ranked))
         if top_count == 0:
-            return PortfolioWeights(rebalance_date=rebalance_date, weights={}, exposure=0.0, diagnostics={})
+            return PortfolioWeights(
+                rebalance_date=rebalance_date,
+                weights={},
+                exposure=0.0,
+                diagnostics={},
+                selected_rows=[],
+                metadata={"selection_score_dispersion": self._score_dispersion(rows)},
+            )
 
         de_risk_level = self.config.get("vix_de_risk_level", 30.0)
         flatten_level = self.config.get("vix_flatten_level", 40.0)
@@ -36,24 +65,35 @@ class MultiSignalStrategy:
         elif max_vix >= de_risk_level:
             exposure = min(exposure, 0.5)
 
-        long_names = self._select_long_names(ranked, top_count)
+        long_names = self._select_long_names(ranked, top_count, previous_weights, exposure)
         if not long_names:
-            return PortfolioWeights(rebalance_date=rebalance_date, weights={}, exposure=0.0, diagnostics={})
-        weights = {row["permno"]: exposure / len(long_names) for row in long_names}
+            return PortfolioWeights(
+                rebalance_date=rebalance_date,
+                weights={},
+                exposure=0.0,
+                diagnostics={},
+                selected_rows=[],
+                metadata={"selection_score_dispersion": self._score_dispersion(rows)},
+            )
+        weights = self._build_side_weights(long_names, exposure, side="long")
         selected_rows = list(long_names)
+        metadata = {"selection_score_dispersion": self._score_dispersion(rows)}
         if self.config.get("long_short", False):
             bottom_quantile = self.config.get("bottom_quantile", 0.15)
             short_count = max(1, math.floor(len(ranked) * bottom_quantile))
-            short_names = self._select_short_names(ranked, short_count)
+            short_names = self._select_short_names(ranked, short_count, previous_weights, exposure)
             if not short_names:
                 return PortfolioWeights(
                     rebalance_date=rebalance_date,
                     weights=weights,
                     exposure=exposure,
                     diagnostics=self._constraint_diagnostics(weights, selected_rows),
+                    selected_rows=selected_rows,
+                    metadata=metadata,
                 )
-            for row in short_names:
-                weights[row["permno"]] = weights.get(row["permno"], 0.0) - exposure / len(short_names)
+            short_weights = self._build_side_weights(short_names, exposure, side="short")
+            for permno, weight in short_weights.items():
+                weights[permno] = weights.get(permno, 0.0) + weight
             selected_rows.extend(short_names)
             if self.config.get("beta_neutral", False):
                 weights = self._apply_long_short_beta_neutral(weights, long_names, short_names, exposure)
@@ -66,28 +106,62 @@ class MultiSignalStrategy:
             weights=weights,
             exposure=exposure,
             diagnostics=self._constraint_diagnostics(weights, selected_rows),
+            selected_rows=selected_rows,
+            metadata=metadata,
         )
 
-    def _select_long_names(self, ranked: list[dict], target_count: int) -> list[dict]:
+    def _select_long_names(self, ranked: list[dict], target_count: int, previous_weights: dict[str, float], exposure: float) -> list[dict]:
         if not self.config.get("sector_neutral", False):
-            return ranked[:target_count]
-        return self._select_sector_neutral(ranked, target_count, reverse=True)
+            ordered = sorted(
+                ranked,
+                key=lambda row: self._selection_score(row, previous_weights, side="long", target_count=target_count, exposure=exposure),
+                reverse=True,
+            )
+            return self._select_with_entry_threshold(ordered, target_count, previous_weights, side="long", exposure=exposure)
+        return self._select_sector_neutral(ranked, target_count, reverse=True, previous_weights=previous_weights, side="long", exposure=exposure)
 
-    def _select_short_names(self, ranked: list[dict], target_count: int) -> list[dict]:
+    def _select_short_names(self, ranked: list[dict], target_count: int, previous_weights: dict[str, float], exposure: float) -> list[dict]:
         if not self.config.get("sector_neutral", False):
-            return ranked[-target_count:]
-        return self._select_sector_neutral(ranked, target_count, reverse=False)
+            ordered = sorted(
+                ranked,
+                key=lambda row: self._selection_score(row, previous_weights, side="short", target_count=target_count, exposure=exposure),
+            )
+            return self._select_with_entry_threshold(ordered, target_count, previous_weights, side="short", exposure=exposure)
+        return self._select_sector_neutral(ranked, target_count, reverse=False, previous_weights=previous_weights, side="short", exposure=exposure)
 
-    def _select_sector_neutral(self, ranked: list[dict], target_count: int, reverse: bool) -> list[dict]:
+    def _select_sector_neutral(
+        self,
+        ranked: list[dict],
+        target_count: int,
+        reverse: bool,
+        previous_weights: dict[str, float],
+        side: str,
+        exposure: float,
+    ) -> list[dict]:
         buckets: dict[str, list[dict]] = {}
         for row in ranked:
             buckets.setdefault(row.get("sector", "UNKNOWN"), []).append(row)
         for sector_rows in buckets.values():
-            sector_rows.sort(key=self._score_value, reverse=reverse)
+            sector_rows.sort(
+                key=lambda row: self._selection_score(
+                    row,
+                    previous_weights,
+                    side=side,
+                    target_count=target_count,
+                    exposure=exposure,
+                ),
+                reverse=reverse,
+            )
 
         sector_order = sorted(
             buckets,
-            key=lambda sector: self._score_value(buckets[sector][0]),
+            key=lambda sector: self._selection_score(
+                buckets[sector][0],
+                previous_weights,
+                side=side,
+                target_count=target_count,
+                exposure=exposure,
+            ),
             reverse=reverse,
         )
         active_sector_count = min(len(sector_order), target_count)
@@ -122,12 +196,278 @@ class MultiSignalStrategy:
 
         selected = []
         for sector in active_sectors:
-            selected.extend(buckets[sector][: counts[sector]])
-        selected.sort(key=self._score_value, reverse=reverse)
+            selected.extend(
+                self._select_with_entry_threshold(
+                    buckets[sector],
+                    counts[sector],
+                    previous_weights,
+                    side=side,
+                    exposure=exposure,
+                )
+            )
+        selected.sort(
+            key=lambda row: self._selection_score(
+                row,
+                previous_weights,
+                side=side,
+                target_count=target_count,
+                exposure=exposure,
+            ),
+            reverse=reverse,
+        )
         return selected[:target_count]
 
     def _score_value(self, row: dict) -> float:
         return float(row.get(self.score_field, row.get("risk_adjusted_score", row.get("composite_score", 0.0))))
+
+    def _selection_score(
+        self,
+        row: dict,
+        previous_weights: dict[str, float],
+        side: str,
+        target_count: int,
+        exposure: float,
+    ) -> float:
+        score = self._score_value(row)
+        incumbent_weight = previous_weights.get(row["permno"], 0.0)
+        if self.incumbent_score_bonus > 0.0:
+            if side == "long" and incumbent_weight > 0.0:
+                score += self.incumbent_score_bonus
+            elif side == "short" and incumbent_weight < 0.0:
+                score -= self.incumbent_score_bonus
+        if self.entry_turnover_penalty_per_weight > 0.0 and not self._is_incumbent(row, previous_weights, side):
+            score -= self.entry_turnover_penalty_per_weight * self._estimated_entry_turnover(previous_weights, side, target_count, exposure)
+        if self.entry_liquidity_penalty_scale > 0.0 and not self._is_incumbent(row, previous_weights, side):
+            liquidity_value = max(abs(float(row.get(self.entry_liquidity_field, 0.0))), self.entry_liquidity_floor)
+            score -= (
+                self.entry_liquidity_penalty_scale
+                * self._estimated_entry_turnover(previous_weights, side, target_count, exposure)
+                / liquidity_value
+            )
+        return score
+
+    def _select_with_entry_threshold(
+        self,
+        ordered_rows: list[dict],
+        target_count: int,
+        previous_weights: dict[str, float],
+        side: str,
+        exposure: float,
+    ) -> list[dict]:
+        effective_threshold = self._effective_entry_threshold(ordered_rows)
+        selected = list(ordered_rows[:target_count])
+        if (
+            target_count <= 0
+            or effective_threshold <= 0.0
+            or not previous_weights
+            or not selected
+        ):
+            return selected
+
+        rejected_incumbents = [
+            row
+            for row in ordered_rows
+            if self._is_incumbent(row, previous_weights, side) and row["permno"] not in {candidate["permno"] for candidate in selected}
+        ]
+        if not rejected_incumbents:
+            return selected
+
+        selected_by_permno = {row["permno"]: row for row in selected}
+        for incumbent in rejected_incumbents:
+            new_entrants = [
+                row
+                for row in selected_by_permno.values()
+                if not self._is_incumbent(row, previous_weights, side)
+            ]
+            if not new_entrants:
+                break
+            entrant_to_replace = self._weakest_selected(new_entrants, previous_weights, side)
+            if self._entry_gap(entrant_to_replace, incumbent, side) >= effective_threshold:
+                continue
+            selected_by_permno.pop(entrant_to_replace["permno"], None)
+            selected_by_permno[incumbent["permno"]] = incumbent
+
+        selected_rows = list(selected_by_permno.values())
+        return sorted(
+            selected_rows,
+            key=lambda row: self._selection_score(
+                row,
+                previous_weights,
+                side=side,
+                target_count=target_count,
+                exposure=exposure,
+            ),
+            reverse=(side == "long"),
+        )[:target_count]
+
+    def _is_incumbent(self, row: dict, previous_weights: dict[str, float], side: str) -> bool:
+        incumbent_weight = previous_weights.get(row["permno"], 0.0)
+        if side == "long":
+            return incumbent_weight > 0.0
+        return incumbent_weight < 0.0
+
+    def _weakest_selected(self, rows: list[dict], previous_weights: dict[str, float], side: str) -> dict:
+        return sorted(
+            rows,
+            key=lambda row: self._score_value(row),
+            reverse=(side == "short"),
+        )[0]
+
+    def _entry_gap(self, entrant: dict, incumbent: dict, side: str) -> float:
+        entrant_score = self._score_value(entrant)
+        incumbent_score = self._score_value(incumbent)
+        if side == "short":
+            return incumbent_score - entrant_score
+        return entrant_score - incumbent_score
+
+    def _effective_entry_threshold(self, rows: list[dict]) -> float:
+        dynamic_threshold = 0.0
+        if self.entry_score_threshold_dynamic_scale > 0.0 and len(rows) >= 2:
+            scores = [self._score_value(row) for row in rows]
+            mean_score = sum(scores) / len(scores)
+            variance = sum((score - mean_score) ** 2 for score in scores) / len(scores)
+            dynamic_threshold = math.sqrt(max(variance, 0.0)) * self.entry_score_threshold_dynamic_scale
+        return max(self.entry_score_threshold, dynamic_threshold)
+
+    def _estimated_entry_turnover(
+        self,
+        previous_weights: dict[str, float],
+        side: str,
+        target_count: int,
+        exposure: float,
+    ) -> float:
+        if target_count <= 0 or exposure <= 0.0:
+            return 0.0
+        if side == "long":
+            side_weights = sorted(weight for weight in previous_weights.values() if weight > 0.0)
+        else:
+            side_weights = sorted(abs(weight) for weight in previous_weights.values() if weight < 0.0)
+        if not side_weights:
+            return 0.0
+        slot_weight = exposure / max(target_count, 1)
+        displaced_weight = side_weights[0]
+        return 0.5 * (slot_weight + displaced_weight)
+
+    def _score_dispersion(self, rows: list[dict]) -> float:
+        if len(rows) < 2:
+            return 0.0
+        scores = [self._score_value(row) for row in rows]
+        mean_score = sum(scores) / len(scores)
+        variance = sum((score - mean_score) ** 2 for score in scores) / len(scores)
+        return math.sqrt(max(variance, 0.0))
+
+    def _build_side_weights(self, selected_rows: list[dict], exposure: float, side: str) -> dict[str, float]:
+        if not selected_rows or exposure <= 0:
+            return {}
+        raw_weights = self._raw_side_weights(selected_rows, side)
+        total_raw = sum(raw_weights)
+        if total_raw <= 0:
+            raw_weights = [1.0 for _ in selected_rows]
+            total_raw = float(len(selected_rows))
+        normalized = {
+            row["permno"]: exposure * raw_weight / total_raw
+            for row, raw_weight in zip(selected_rows, raw_weights, strict=True)
+        }
+        capped = self._apply_position_cap(normalized, exposure, position_caps=self._position_caps(selected_rows, exposure))
+        sign = -1.0 if side == "short" else 1.0
+        return {
+            permno: sign * weight
+            for permno, weight in capped.items()
+        }
+
+    def _raw_side_weights(self, selected_rows: list[dict], side: str) -> list[float]:
+        use_score_weights = self.weighting_scheme in {"score", "score_inverse_vol"}
+        use_inverse_vol_weights = self.weighting_scheme in {"inverse_vol", "score_inverse_vol"}
+        scores = [self._score_value(row) for row in selected_rows]
+        if use_score_weights:
+            if side == "short":
+                score_anchor = max(scores)
+                score_component = [
+                    max(score_anchor - score, 0.0) + self.score_weight_floor
+                    for score in scores
+                ]
+            else:
+                score_anchor = min(scores)
+                score_component = [
+                    max(score - score_anchor, 0.0) + self.score_weight_floor
+                    for score in scores
+                ]
+        else:
+            score_component = [1.0 for _ in selected_rows]
+
+        if use_inverse_vol_weights:
+            risk_component = [
+                1.0 / max(abs(float(row.get(self.risk_weight_field, 0.0))), self.risk_weight_floor)
+                for row in selected_rows
+            ]
+        else:
+            risk_component = [1.0 for _ in selected_rows]
+
+        return [
+            score_weight * risk_weight
+            for score_weight, risk_weight in zip(score_component, risk_component, strict=True)
+        ]
+
+    def _position_caps(self, selected_rows: list[dict], target_exposure: float) -> dict[str, float] | None:
+        if not selected_rows:
+            return None
+        caps: dict[str, float] = {}
+        static_cap = self.max_position_weight if self.max_position_weight > 0.0 else target_exposure
+        liquidity_enabled = self.liquidity_position_cap_ratio > 0.0 and self.liquidity_position_cap_notional > 0.0
+        if static_cap >= target_exposure and not liquidity_enabled:
+            return None
+        for row in selected_rows:
+            cap = static_cap
+            if liquidity_enabled:
+                liquidity_value = max(abs(float(row.get(self.liquidity_position_cap_field, 0.0))), self.liquidity_position_cap_floor)
+                liquidity_cap = self.liquidity_position_cap_ratio * liquidity_value / self.liquidity_position_cap_notional
+                cap = min(cap, liquidity_cap)
+            caps[row["permno"]] = min(max(cap, 0.0), target_exposure)
+        return caps
+
+    def _apply_position_cap(
+        self,
+        weights: dict[str, float],
+        target_exposure: float,
+        position_caps: dict[str, float] | None = None,
+    ) -> dict[str, float]:
+        if not weights:
+            return {}
+        if position_caps is None:
+            cap = self.max_position_weight
+            if cap <= 0 or cap >= target_exposure:
+                return weights
+            position_caps = {permno: cap for permno in weights}
+        if sum(position_caps.get(permno, target_exposure) for permno in weights) < target_exposure - 1e-12:
+            return weights
+
+        remaining = dict(weights)
+        adjusted: dict[str, float] = {}
+        remaining_target = target_exposure
+        while remaining:
+            remaining_total = sum(remaining.values())
+            if remaining_total <= 0 or remaining_target <= 0:
+                break
+            capped_permnos = [
+                permno
+                for permno, weight in remaining.items()
+                if remaining_target * weight / remaining_total > position_caps.get(permno, target_exposure) + 1e-12
+            ]
+            if not capped_permnos:
+                break
+            for permno in capped_permnos:
+                capped_weight = position_caps.get(permno, target_exposure)
+                adjusted[permno] = capped_weight
+                remaining_target -= capped_weight
+                remaining.pop(permno)
+
+        remaining_total = sum(remaining.values())
+        if remaining_total > 0 and remaining_target > 0:
+            for permno, weight in remaining.items():
+                adjusted[permno] = remaining_target * weight / remaining_total
+        if adjusted:
+            return adjusted
+        return weights
 
     def _apply_long_short_beta_neutral(
         self,
@@ -294,3 +634,6 @@ class MultiSignalStrategy:
                     if row.get("sector", "UNKNOWN") == sector
                 )
         return diagnostics
+
+    def recompute_diagnostics(self, weights: dict[str, float], selected_rows: list[dict] | None = None) -> dict[str, float]:
+        return self._constraint_diagnostics(weights, selected_rows or [])

@@ -4,6 +4,9 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str((Path(__file__).resolve().parents[1] / "src")))
 
 from quant_research.cache import PreparedDataCache
 from quant_research.config import Config
@@ -161,6 +164,106 @@ class CacheTest(unittest.TestCase):
             config_b = dict(base_config)
             config_b["strategy"] = dict(base_config["strategy"])
             config_b["strategy"]["report_lag_days"] = 60
+            config_b_path = root / "config_b.json"
+            config_b_path.write_text(json.dumps(config_b), encoding="utf-8")
+
+            first = PreparedDataCache(Config.load(config_a_path)).load_or_build()
+            second = PreparedDataCache(Config.load(config_b_path)).load_or_build()
+            self.assertFalse(first.cache_hit)
+            self.assertFalse(second.cache_hit)
+            self.assertTrue(second.source_cache_hit)
+            self.assertFalse(second.feature_cache_hit)
+            self.assertFalse(second.prepared_cache_hit)
+
+    def test_feature_normalization_change_reuses_source_cache_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for dirname in ("data", "output"):
+                (root / dirname).mkdir()
+            self._write_dataset(root)
+
+            base_config = {
+                "paths": {
+                    "output_dir": "output",
+                    "compustat_quarterly": "data/sample_compustat_quarterly.csv",
+                    "crsp_daily": "data/sample_crsp_daily.csv",
+                    "ccm_link": "data/sample_ccm_link.csv",
+                    "ibes_link": "data/sample_ibes_link.csv",
+                    "ibes_summary": "data/sample_ibes_summary.csv",
+                    "ibes_surprise": "data/sample_ibes_surprise.csv",
+                    "kpss_patent": "data/sample_kpss_patent.csv",
+                    "ff_factors": "data/sample_ff_factors.csv",
+                    "fred_dgs10": "data/sample_fred_dgs10.csv",
+                    "cboe_vix": "data/sample_cboe_vix.csv",
+                    "fmp_grades": "data/sample_fmp_grades.csv"
+                },
+                "cache": {"enabled": True, "cache_dir": "output/cache"},
+                "strategy": {
+                    "start_date": "2024-01-01",
+                    "end_date": "2025-12-31",
+                    "use_rdq": True,
+                    "report_lag_days": 45,
+                    "beta_lookback_days": 126,
+                    "min_beta_observations": 60,
+                    "feature_zscore_method": "standard",
+                    "feature_winsor_quantile": 0.0
+                }
+            }
+            config_a_path = root / "config_a.json"
+            config_a_path.write_text(json.dumps(base_config), encoding="utf-8")
+            config_b = dict(base_config)
+            config_b["strategy"] = dict(base_config["strategy"])
+            config_b["strategy"]["feature_zscore_method"] = "robust"
+            config_b_path = root / "config_b.json"
+            config_b_path.write_text(json.dumps(config_b), encoding="utf-8")
+
+            first = PreparedDataCache(Config.load(config_a_path)).load_or_build()
+            second = PreparedDataCache(Config.load(config_b_path)).load_or_build()
+            self.assertFalse(first.cache_hit)
+            self.assertFalse(second.cache_hit)
+            self.assertTrue(second.source_cache_hit)
+            self.assertFalse(second.feature_cache_hit)
+            self.assertFalse(second.prepared_cache_hit)
+
+    def test_liquidity_lookback_change_reuses_source_cache_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for dirname in ("data", "output"):
+                (root / dirname).mkdir()
+            self._write_dataset(root)
+
+            base_config = {
+                "paths": {
+                    "output_dir": "output",
+                    "compustat_quarterly": "data/sample_compustat_quarterly.csv",
+                    "crsp_daily": "data/sample_crsp_daily.csv",
+                    "ccm_link": "data/sample_ccm_link.csv",
+                    "ibes_link": "data/sample_ibes_link.csv",
+                    "ibes_summary": "data/sample_ibes_summary.csv",
+                    "ibes_surprise": "data/sample_ibes_surprise.csv",
+                    "kpss_patent": "data/sample_kpss_patent.csv",
+                    "ff_factors": "data/sample_ff_factors.csv",
+                    "fred_dgs10": "data/sample_fred_dgs10.csv",
+                    "cboe_vix": "data/sample_cboe_vix.csv",
+                    "fmp_grades": "data/sample_fmp_grades.csv"
+                },
+                "cache": {"enabled": True, "cache_dir": "output/cache"},
+                "strategy": {
+                    "start_date": "2024-01-01",
+                    "end_date": "2025-12-31",
+                    "use_rdq": True,
+                    "report_lag_days": 45,
+                    "beta_lookback_days": 126,
+                    "min_beta_observations": 60,
+                    "liquidity_lookback_days": 20,
+                    "liquidity_fallback_adv_to_mcap": 0.02
+                }
+            }
+            config_a_path = root / "config_a.json"
+            config_a_path.write_text(json.dumps(base_config), encoding="utf-8")
+            config_b = dict(base_config)
+            config_b["strategy"] = dict(base_config["strategy"])
+            config_b["strategy"]["liquidity_lookback_days"] = 60
             config_b_path = root / "config_b.json"
             config_b_path.write_text(json.dumps(config_b), encoding="utf-8")
 

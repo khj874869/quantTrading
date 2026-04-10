@@ -27,6 +27,8 @@ def export_rebalance_signals(prepared_data: PreparedData, output_dir: Path) -> P
                     "risk_regime_multiplier": f"{row.get('risk_regime_multiplier', 1.0):.8f}",
                     "risk_penalty": f"{row.get('risk_penalty', 0.0):.8f}",
                     "market_cap": f"{row['market_cap']:.2f}",
+                    "avg_dollar_volume": f"{row.get('avg_dollar_volume', 0.0):.2f}",
+                    "liquidity_ratio": f"{row.get('liquidity_ratio', 0.0):.8f}",
                     "book_to_market": f"{row['book_to_market']:.8f}",
                     "roa": f"{row['roa']:.8f}",
                     "asset_growth": f"{row['asset_growth']:.8f}",

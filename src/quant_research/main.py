@@ -83,6 +83,8 @@ def main() -> None:
         strategy,
         output_dir=output_dir,
         transaction_cost_bps=float(config.strategy.get("transaction_cost_bps", 10.0)),
+        commission_cost_bps=float(config.strategy.get("commission_cost_bps", 0.0)),
+        slippage_cost_bps=float(config.strategy.get("slippage_cost_bps", max(float(config.strategy.get("transaction_cost_bps", 10.0)) - float(config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
     ).run()
     for key, value in summary.items():
         print(f"{key}={value:.8f}")

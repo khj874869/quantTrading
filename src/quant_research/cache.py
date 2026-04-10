@@ -18,9 +18,13 @@ FEATURE_STRATEGY_KEYS = [
     "end_date",
     "report_lag_days",
     "use_rdq",
+    "liquidity_lookback_days",
+    "liquidity_fallback_adv_to_mcap",
     "min_price",
     "min_market_cap",
     "vix_de_risk_level",
+    "feature_zscore_method",
+    "feature_winsor_quantile",
 ]
 BETA_STRATEGY_KEYS = [
     "beta_lookback_days",
@@ -31,6 +35,8 @@ BETA_STRATEGY_KEYS = [
     "beta_shrinkage_target",
     "risk_penalty_downside_beta_weight",
     "risk_penalty_idio_vol_weight",
+    "risk_zscore_method",
+    "risk_winsor_quantile",
     "regime_risk_scaling_enabled",
     "regime_vix_threshold",
     "regime_vix_penalty_multiplier",

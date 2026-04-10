@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from math import exp, log
 from pathlib import Path
 from time import perf_counter
 
 from .config import Config
-from .utils import float_or_none, month_end, parse_date, parse_optional_date, pct_change, read_csv_dicts, safe_div, zscore
+from .utils import float_or_none, month_end, normalize_cross_section, parse_date, parse_optional_date, pct_change, read_csv_dicts, safe_div
 
 
 @dataclass(slots=True)
@@ -30,6 +30,7 @@ class PreparedData:
     features_by_rebalance: dict[date, list[dict]]
     returns_by_date: dict[date, dict[str, float]]
     benchmark_by_date: dict[date, float]
+    risk_free_by_date: dict[date, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class FeaturePanel:
     features_by_rebalance: dict[date, list[dict]]
     returns_by_date: dict[date, dict[str, float]]
     benchmark_by_date: dict[date, float]
+    risk_free_by_date: dict[date, float] = field(default_factory=dict)
 
 
 class DataPipeline:
@@ -45,6 +47,8 @@ class DataPipeline:
         self.start_date = parse_optional_date(str(config.strategy.get("start_date", "")).strip())
         self.end_date = parse_optional_date(str(config.strategy.get("end_date", "")).strip())
         self.report_lag_days = int(config.strategy.get("report_lag_days", 45))
+        self.liquidity_lookback_days = int(config.strategy.get("liquidity_lookback_days", 20))
+        self.liquidity_fallback_adv_to_mcap = max(float(config.strategy.get("liquidity_fallback_adv_to_mcap", 0.02)), 1e-6)
         self.use_rdq = bool(config.strategy.get("use_rdq", True))
         self.beta_lookback_days = int(config.strategy.get("beta_lookback_days", 126))
         self.min_beta_observations = int(config.strategy.get("min_beta_observations", 60))
@@ -54,6 +58,10 @@ class DataPipeline:
         self.beta_shrinkage_target = float(config.strategy.get("beta_shrinkage_target", 1.0))
         self.risk_penalty_downside_beta_weight = float(config.strategy.get("risk_penalty_downside_beta_weight", 0.0))
         self.risk_penalty_idio_vol_weight = float(config.strategy.get("risk_penalty_idio_vol_weight", 0.0))
+        self.feature_zscore_method = self._normalization_method(config.strategy.get("feature_zscore_method", "robust"))
+        self.feature_winsor_quantile = self._normalization_quantile(config.strategy.get("feature_winsor_quantile", 0.05))
+        self.risk_zscore_method = self._normalization_method(config.strategy.get("risk_zscore_method", "robust"))
+        self.risk_winsor_quantile = self._normalization_quantile(config.strategy.get("risk_winsor_quantile", 0.05))
         self.regime_risk_scaling_enabled = bool(config.strategy.get("regime_risk_scaling_enabled", True))
         self.regime_vix_threshold = float(config.strategy.get("regime_vix_threshold", config.strategy.get("vix_de_risk_level", 30.0)))
         self.regime_vix_penalty_multiplier = float(config.strategy.get("regime_vix_penalty_multiplier", 1.5))
@@ -113,6 +121,7 @@ class DataPipeline:
         mark = perf_counter()
         returns = self._build_returns(sources.prices)
         benchmarks = {row["date"]: row["mktrf"] + row["rf"] for row in sources.factors}
+        risk_free = {row["date"]: row["rf"] for row in sources.factors}
         self.profile["build_market_series_seconds"] = perf_counter() - mark
         mark = perf_counter()
         features = self._build_security_features(
@@ -128,7 +137,12 @@ class DataPipeline:
         )
         self.profile["build_features_seconds"] = perf_counter() - mark
         self.profile["build_feature_panel_total_seconds"] = perf_counter() - started
-        return FeaturePanel(features_by_rebalance=features, returns_by_date=returns, benchmark_by_date=benchmarks)
+        return FeaturePanel(
+            features_by_rebalance=features,
+            returns_by_date=returns,
+            benchmark_by_date=benchmarks,
+            risk_free_by_date=risk_free,
+        )
 
     def finalize_prepared_data(self, feature_panel: FeaturePanel) -> PreparedData:
         started = perf_counter()
@@ -147,6 +161,7 @@ class DataPipeline:
             features_by_rebalance=features,
             returns_by_date=feature_panel.returns_by_date,
             benchmark_by_date=feature_panel.benchmark_by_date,
+            risk_free_by_date=feature_panel.risk_free_by_date,
         )
 
     def build_prepared_data(self, sources: SourceData) -> PreparedData:
@@ -193,6 +208,7 @@ class DataPipeline:
                     "ret": (1.0 + ret) * (1.0 + dlret) - 1.0,
                     "prc": abs(float_or_none(row.get("prc")) or 0.0),
                     "shrout": float_or_none(row.get("shrout")) or 0.0,
+                    "vol": float_or_none(row.get("vol")) or 0.0,
                 }
             )
         for key in by_permno:
@@ -346,6 +362,10 @@ class DataPipeline:
                 if not price_snapshot:
                     continue
                 market_cap = price_snapshot["prc"] * price_snapshot["shrout"] * 1000.0
+                avg_dollar_volume = self._average_dollar_volume(prices[permno], rebalance_date)
+                if avg_dollar_volume is None or avg_dollar_volume <= 0.0:
+                    avg_dollar_volume = market_cap * self.liquidity_fallback_adv_to_mcap
+                liquidity_ratio = safe_div(avg_dollar_volume, market_cap) or self.liquidity_fallback_adv_to_mcap
                 prior_report = reports[report_index - 4] if report_index >= 4 else None
                 ticker = permno_to_symbol.get(permno)
                 ibes_rows = ibes_summary.get(ticker, []) if ticker else []
@@ -375,6 +395,8 @@ class DataPipeline:
                     "permno": permno,
                     "sector": report["sector"],
                     "market_cap": market_cap,
+                    "avg_dollar_volume": avg_dollar_volume,
+                    "liquidity_ratio": liquidity_ratio,
                     "price": price_snapshot["prc"],
                     "book_to_market": book_to_market or 0.0,
                     "roa": roa or 0.0,
@@ -408,7 +430,7 @@ class DataPipeline:
                 "net_upgrades",
             ]
             for factor_name in factor_names:
-                scores = zscore([row[factor_name] for row in filtered])
+                scores = self._normalize_feature_values([row[factor_name] for row in filtered])
                 for row, score in zip(filtered, scores, strict=True):
                     row[f"{factor_name}_z"] = score
             for row in filtered:
@@ -540,8 +562,8 @@ class DataPipeline:
         for rows in features_by_rebalance.values():
             if not rows:
                 continue
-            downside_beta_scores = zscore([row.get("downside_beta", row.get("beta", 1.0)) for row in rows])
-            idio_vol_scores = zscore([row.get("idio_vol", 0.0) for row in rows])
+            downside_beta_scores = self._normalize_risk_values([row.get("downside_beta", row.get("beta", 1.0)) for row in rows])
+            idio_vol_scores = self._normalize_risk_values([row.get("idio_vol", 0.0) for row in rows])
             for row, downside_beta_z, idio_vol_z in zip(rows, downside_beta_scores, idio_vol_scores, strict=True):
                 row["downside_beta_z"] = downside_beta_z
                 row["idio_vol_z"] = idio_vol_z
@@ -632,6 +654,23 @@ class DataPipeline:
                 citation_count += row["citation_count"]
         return {"patent_count": patent_count, "citation_count": citation_count}
 
+    def _average_dollar_volume(self, rows: list[dict], target_date: date) -> float | None:
+        lower_bound = target_date.toordinal() - max(self.liquidity_lookback_days, 1)
+        dollar_volumes = []
+        for row in rows:
+            if row["date"] >= target_date:
+                break
+            if row["date"].toordinal() < lower_bound:
+                continue
+            volume = float(row.get("vol", 0.0))
+            price = float(row.get("prc", 0.0))
+            if volume <= 0.0 or price <= 0.0:
+                continue
+            dollar_volumes.append(price * volume)
+        if not dollar_volumes:
+            return None
+        return sum(dollar_volumes) / len(dollar_volumes)
+
     def _grade_pulse(self, rows: list[dict], target_date: date) -> float:
         score = 0.0
         for row in rows:
@@ -680,3 +719,26 @@ class DataPipeline:
             for row in rows
             if row["price"] >= minimum_price and row["market_cap"] >= minimum_market_cap
         ]
+
+    def _normalize_feature_values(self, values: list[float]) -> list[float]:
+        return normalize_cross_section(
+            values,
+            method=self.feature_zscore_method,
+            winsor_quantile=self.feature_winsor_quantile,
+        )
+
+    def _normalize_risk_values(self, values: list[float]) -> list[float]:
+        return normalize_cross_section(
+            values,
+            method=self.risk_zscore_method,
+            winsor_quantile=self.risk_winsor_quantile,
+        )
+
+    def _normalization_method(self, value: object) -> str:
+        method = str(value).strip().lower() or "standard"
+        if method not in {"standard", "robust"}:
+            return "standard"
+        return method
+
+    def _normalization_quantile(self, value: object) -> float:
+        return min(max(float(value), 0.0), 0.49)

@@ -35,6 +35,8 @@ def run_parameter_sweep(config: Config) -> Path:
             MultiSignalStrategy(run_config.strategy),
             output_dir=run_dir,
             transaction_cost_bps=float(run_config.strategy.get("transaction_cost_bps", 10.0)),
+            commission_cost_bps=float(run_config.strategy.get("commission_cost_bps", 0.0)),
+            slippage_cost_bps=float(run_config.strategy.get("slippage_cost_bps", max(float(run_config.strategy.get("transaction_cost_bps", 10.0)) - float(run_config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
         ).run()
         results.append(
             {
@@ -301,6 +303,8 @@ def _run_backtest(config: Config, output_dir: Path) -> dict[str, float]:
         MultiSignalStrategy(config.strategy),
         output_dir=output_dir,
         transaction_cost_bps=float(config.strategy.get("transaction_cost_bps", 10.0)),
+        commission_cost_bps=float(config.strategy.get("commission_cost_bps", 0.0)),
+        slippage_cost_bps=float(config.strategy.get("slippage_cost_bps", max(float(config.strategy.get("transaction_cost_bps", 10.0)) - float(config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
     ).run()
 
 
@@ -333,8 +337,13 @@ def _load_daily_return_rows(path: Path, window_id: str) -> list[dict]:
                     "benchmark_return": float(row["benchmark_return"]),
                     "active_return": float(row["active_return"]),
                     "exposure": float(row["exposure"]),
+                    "cash_weight": float(row.get("cash_weight", 0.0)),
+                    "cash_carry": float(row.get("cash_carry", 0.0)),
                     "holdings": float(row["holdings"]),
                     "turnover": float(row["turnover"]),
+                    "cash_drag": float(row.get("cash_drag", 0.0)),
+                    "commission_cost": float(row.get("commission_cost", 0.0)),
+                    "slippage_cost": float(row.get("slippage_cost", 0.0)),
                     "transaction_cost": float(row["transaction_cost"]),
                 }
             )
@@ -348,21 +357,40 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
             "total_return": 0.0,
             "benchmark_total_return": 0.0,
             "active_total_return": 0.0,
+            "gross_total_return": 0.0,
             "cagr": 0.0,
             "sharpe": 0.0,
             "information_ratio": 0.0,
             "max_drawdown": 0.0,
             "average_turnover": 0.0,
+            "average_cash_weight": 0.0,
+            "total_cash_carry": 0.0,
+            "average_cash_carry": 0.0,
+            "total_cash_drag": 0.0,
+            "average_cash_drag": 0.0,
+            "total_transaction_cost": 0.0,
+            "total_commission_cost": 0.0,
+            "total_slippage_cost": 0.0,
+            "average_transaction_cost": 0.0,
+            "transaction_cost_drag": 0.0,
         }
     ordered_rows = sorted(rows, key=lambda row: row["date"])
     equity = 1.0
+    gross_equity = 1.0
     benchmark_equity = 1.0
     peak = 1.0
     returns = []
     active_returns = []
     turnovers = []
+    cash_weights = []
+    cash_carries = []
+    cash_drags = []
+    transaction_costs = []
+    commission_costs = []
+    slippage_costs = []
     max_drawdown = 0.0
     for row in ordered_rows:
+        gross_equity *= 1.0 + row["gross_return"]
         equity *= 1.0 + row["net_return"]
         benchmark_equity *= 1.0 + row["benchmark_return"]
         peak = max(peak, equity)
@@ -370,6 +398,12 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
         returns.append(row["net_return"])
         active_returns.append(row["active_return"])
         turnovers.append(row["turnover"])
+        cash_weights.append(row.get("cash_weight", 0.0))
+        cash_carries.append(row.get("cash_carry", 0.0))
+        cash_drags.append(row.get("cash_drag", 0.0))
+        transaction_costs.append(row["transaction_cost"])
+        commission_costs.append(row.get("commission_cost", 0.0))
+        slippage_costs.append(row.get("slippage_cost", 0.0))
     mean_return = sum(returns) / len(returns)
     variance = sum((value - mean_return) ** 2 for value in returns) / len(returns)
     active_mean = sum(active_returns) / len(active_returns)
@@ -387,11 +421,22 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
         "total_return": equity - 1.0,
         "benchmark_total_return": benchmark_equity - 1.0,
         "active_total_return": equity - benchmark_equity,
+        "gross_total_return": gross_equity - 1.0,
         "cagr": cagr,
         "sharpe": sharpe,
         "information_ratio": information_ratio,
         "max_drawdown": max_drawdown,
         "average_turnover": sum(turnovers) / len(turnovers),
+        "average_cash_weight": sum(cash_weights) / len(cash_weights),
+        "total_cash_carry": sum(cash_carries),
+        "average_cash_carry": sum(cash_carries) / len(cash_carries),
+        "total_cash_drag": sum(cash_drags),
+        "average_cash_drag": sum(cash_drags) / len(cash_drags),
+        "total_transaction_cost": sum(transaction_costs),
+        "total_commission_cost": sum(commission_costs),
+        "total_slippage_cost": sum(slippage_costs),
+        "average_transaction_cost": sum(transaction_costs) / len(transaction_costs),
+        "transaction_cost_drag": (gross_equity - 1.0) - (equity - 1.0),
     }
 
 
@@ -408,8 +453,13 @@ def _write_walk_forward_daily_returns(path: Path, rows: list[dict]) -> None:
                 "benchmark_return",
                 "active_return",
                 "exposure",
+                "cash_weight",
+                "cash_carry",
                 "holdings",
                 "turnover",
+                "cash_drag",
+                "commission_cost",
+                "slippage_cost",
                 "transaction_cost",
             ],
         )
@@ -424,8 +474,13 @@ def _write_walk_forward_daily_returns(path: Path, rows: list[dict]) -> None:
                     "benchmark_return": _format_value(row["benchmark_return"]),
                     "active_return": _format_value(row["active_return"]),
                     "exposure": _format_value(row["exposure"]),
+                    "cash_weight": _format_value(row.get("cash_weight", 0.0)),
+                    "cash_carry": _format_value(row.get("cash_carry", 0.0)),
                     "holdings": _format_value(row["holdings"]),
                     "turnover": _format_value(row["turnover"]),
+                    "cash_drag": _format_value(row.get("cash_drag", 0.0)),
+                    "commission_cost": _format_value(row.get("commission_cost", 0.0)),
+                    "slippage_cost": _format_value(row.get("slippage_cost", 0.0)),
                     "transaction_cost": _format_value(row["transaction_cost"]),
                 }
             )
@@ -594,10 +649,16 @@ def _summary_fieldnames(rows: list[dict]) -> list[str]:
         "active_total_return",
         "sharpe",
         "total_return",
+        "gross_total_return",
         "benchmark_total_return",
         "cagr",
         "max_drawdown",
         "average_turnover",
+        "total_transaction_cost",
+        "total_commission_cost",
+        "total_slippage_cost",
+        "average_transaction_cost",
+        "transaction_cost_drag",
         "days",
     ]
     preferred_fields = [key for key in preferred if key in present_keys]
@@ -614,6 +675,7 @@ def _format_value(value: object) -> object:
 _SUMMARY_KEYS = {
     "days",
     "total_return",
+    "gross_total_return",
     "benchmark_total_return",
     "active_total_return",
     "cagr",
@@ -621,4 +683,9 @@ _SUMMARY_KEYS = {
     "information_ratio",
     "max_drawdown",
     "average_turnover",
+    "total_transaction_cost",
+    "total_commission_cost",
+    "total_slippage_cost",
+    "average_transaction_cost",
+    "transaction_cost_drag",
 }
