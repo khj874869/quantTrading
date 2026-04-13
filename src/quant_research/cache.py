@@ -22,6 +22,11 @@ FEATURE_STRATEGY_KEYS = [
     "liquidity_fallback_adv_to_mcap",
     "min_price",
     "min_market_cap",
+    "min_avg_dollar_volume",
+    "universe_include_sectors",
+    "universe_exclude_sectors",
+    "universe_top_n_by_market_cap",
+    "benchmark_mode",
     "vix_de_risk_level",
     "feature_zscore_method",
     "feature_winsor_quantile",
@@ -181,7 +186,6 @@ class PreparedDataCache:
             feature_cache_hit=feature_cache_hit,
             prepared_cache_hit=False,
         )
-
     def _source_fingerprint(self) -> str:
         source_paths = []
         for key, value in sorted(self.config.paths.items()):
@@ -203,7 +207,6 @@ class PreparedDataCache:
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
-
     def _prepared_fingerprint(self, feature_fingerprint: str) -> str:
         payload = {
             "cache_version": CACHE_VERSION,
@@ -243,3 +246,4 @@ class PreparedDataCache:
     def _read(self, path: Path) -> dict:
         with path.open("rb") as handle:
             return pickle.load(handle)
+ 

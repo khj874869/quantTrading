@@ -1,71 +1,161 @@
 # Quant Research Stack
 
-WRDS 기반 기업 패널과 FRED/Cboe/FMP 외생 신호를 결합해 미국 주식 월간 멀티팩터 전략을 구성하는 최소 동작 프로젝트다.
+Quant Research Stack is a local-first equity research and backtesting toolkit built around WRDS-style fundamentals, CRSP-style returns, FRED macro data, Cboe VIX, and analyst revision inputs.
 
-## 포함 범위
+It is designed for one workflow:
 
-- `Compustat Quarterly`: 분기 재무제표
-- `CRSP Daily`: 일별 수익률, 시가총액, 상장폐지 수익률
-- `IBES Summary`: 컨센서스, 추정치 수, 분산
-- `IBES Surprise`: 실제 EPS 대비 컨센서스 서프라이즈
-- `KPSS Patent`: 특허 수, 인용 수
-- `Fama-French`: 시장/사이즈/가치/모멘텀 벤치마크
-- `FRED DGS10`: 미국 10년 금리
-- `Cboe VIX`: 변동성 지수
-- `FMP Upgrades/Downgrades`: 애널리스트 투자등급 변화
+1. Build a feature panel from raw research data.
+2. Generate signals and constrained portfolios.
+3. Backtest with more realistic execution assumptions.
+4. Export validation, attribution, execution, and capacity diagnostics.
+5. Review everything in a static HTML dashboard.
 
-## 빠른 시작
+## Why This Exists
 
-1. `config/example_config.json`을 기준으로 입력 경로와 API 키를 채운다.
-2. 필요한 CSV를 `data/` 아래에 배치한다.
-   FMP 실시간 수집을 쓸 경우 `api.fmp_symbols`에 유니버스를 넣는다.
-3. 아래 명령으로 외부 데이터 수집과 백테스트를 실행한다.
+Most small quant projects stop at "a Sharpe ratio in a notebook."
 
-```bash
-python run_quant.py fetch --config config/example_config.json
-python run_quant.py wrds-export --config config/example_config.json --dry-run
-python run_quant.py wrds-export --config config/example_config.json --step compustat_quarterly
-python run_quant.py signals --config config/example_config.json
-python run_quant.py backtest --config config/example_config.json
-python run_quant.py backtest --config config/example_config.json --no-cache
-```
+This project goes further:
 
-샘플 데이터로 즉시 검증하려면:
+- Data validation is explicit.
+- Run provenance is explicit.
+- Capacity and execution realism are explicit.
+- Short borrow and locate assumptions are explicit.
+- Results are exported as CSV, JSON, and HTML instead of staying trapped in memory.
+
+## Current Scope
+
+The stack currently supports:
+
+- `validate`: data quality diagnostics and rebalance coverage checks
+- `signals`: rebalance signal export
+- `orders`: order blotter generation
+- `reconcile`: compare expected orders vs broker fills
+- `publish-demo`: build a GitHub Pages friendly static demo bundle
+- `gallery`: build a filterable multi-preset strategy gallery under `docs/demo/`
+- `backtest`: portfolio simulation with costs and execution controls
+- `report`: attribution, factor diagnostics, capacity diagnostics, stress views, and HTML dashboard
+- `wrds-export`: WRDS extraction helpers
+- `sweep`: parameter sweep research
+- `walk-forward`: walk-forward selection loop
+- `apply-recommended`: apply a recommended config before another command
+
+## Quick Start
+
+Install with Python 3.11+ and run from the repo root.
 
 ```bash
 python run_quant.py backtest --config config/sample_config.json
+python run_quant.py report --config config/sample_config.json
+python run_quant.py reconcile --config config/sample_config.json
+python run_quant.py publish-demo --config config/sample_config.json
+python run_quant.py gallery --config config/sample_config.json
 ```
 
-## Outputs
+The sample config is self-contained and intended as the fastest way to inspect the stack.
 
-- `output/rebalance_signals.csv`
-- `output/portfolio_rebalances.csv`
-- `output/portfolio_daily_returns.csv`
-- `output/summary.json`
-- `output/cache/prepared_data.pkl`
+If you want a hosted demo, the repository now includes a GitHub Pages workflow at `.github/workflows/deploy-pages-demo.yml` that builds the sample bundle and deploys `docs/demo/`.
 
-## Current Portfolio Logic
+## Main Outputs
 
-- `rdq`가 있으면 공시일 기준으로 리밸런싱 월을 잡고, 없으면 `report_lag_days`를 사용합니다.
-- `sector_neutral=true`이면 섹터별 버킷에서 상위 종목을 나눠 뽑아 과도한 섹터 쏠림을 줄입니다.
-- `beta_neutral=true`이면 종목별 추정 베타를 사용합니다.
-- 롱온리에서 `benchmark_hedge=true`이면 `__BENCH__` 헤지 가중치가 추가됩니다.
-- 롱숏에서는 숏 레그를 스케일해 포트폴리오 총 베타를 0에 가깝게 맞춥니다.
-- `constraint_neutral=true`이면 롱숏 선택 종목에 대해 `beta + size + sector` 제약 투영을 적용합니다.
-- 기본 실행 시 `cache_hit=0` 또는 `cache_hit=1`이 먼저 출력되고, 입력 파일이 안 바뀌면 준비된 패널을 재사용합니다.
-- `transaction_cost_bps` 같은 백테스트 전용 설정 변경은 prepared-data cache를 무효화하지 않습니다.
+Common files written under the configured `output_dir`:
 
-## 참고 소스
+- `validation_summary.json`
+- `rebalance_signals.csv`
+- `portfolio_rebalances.csv`
+- `portfolio_daily_returns.csv`
+- `summary.json`
+- `run_manifest.json`
+- `report_summary.json`
+- `report_dashboard.html`
+- `order_blotter.csv`
+- `execution_reconciliation.csv`
+- `docs/demo/index.html`
+- `docs/demo/gallery.html`
+- `docs/demo/gallery/<preset>/share_card.svg`
+- `docs/demo/latest_winner.json`
+- `docs/demo/latest_winner_badge.svg`
+- `docs/demo/latest_winner_readme_snippet.md`
+- `docs/demo/latest_winner_release_note.md`
+- `docs/demo/latest_winner_social_post.txt`
 
-- FRED API `fred/series/observations`: https://fred.stlouisfed.org/docs/api/fred/series/series_observations.html
-- FRED DGS10 시리즈: https://fred.stlouisfed.org/series/DGS10
-- Cboe VIX historical data: https://www.cboe.com/tradable_products/vix/vix_historical_data/
-- FMP upgrades/downgrades: https://site.financialmodelingprep.com/developer/docs/upgrades-and-downgrades-api
-- WRDS IBES-CRSP linking note: https://wrds-www.wharton.upenn.edu/pages/wrds-research/database-linking-matrix/linking-ibes-with-crsp/
+When `gallery` is generated, the root `docs/demo/index.html` is refreshed to spotlight the latest top preset, its share card, and channel-ready winner snippets for README, release notes, and social copy.
 
-## WRDS 직접 추출
+The fastest artifact to inspect is:
 
-- 단계별 문서: `docs/wrds_workflow.md`
-- SQL 템플릿: `sql/wrds/`
-- 실행 명령: `python run_quant.py wrds-export --config config/example_config.json`
-- 플레이스홀더 검증: `python run_quant.py wrds-export --config config/example_config.json --dry-run`
+- `config/output/report_dashboard.html`
+
+## Research Features
+
+- Universe filters with sector include/exclude and top-N market-cap controls
+- Benchmark selection with explicit benchmark mode
+- Long-only and long/short portfolio paths
+- Borrow cost and short locate constraints
+- Heuristic and optimizer-based portfolio construction
+- Covariance-aware optimizer penalty
+- Adaptive turnover budgeting
+- Multi-day execution simulation
+- Capacity curve and participation breach analysis
+- Execution reconciliation against broker fills
+- Factor IC, quintile spread, and regime diagnostics
+- Stress scenario breakdowns
+
+## Typical Workflow
+
+### 1. Validate data quality
+
+```bash
+python run_quant.py validate --config config/example_config.json
+```
+
+### 2. Generate signals or orders
+
+```bash
+python run_quant.py signals --config config/example_config.json
+python run_quant.py orders --config config/example_config.json
+```
+
+### 3. Run backtest and report
+
+```bash
+python run_quant.py backtest --config config/example_config.json
+python run_quant.py report --config config/example_config.json
+```
+
+### 4. Reconcile expected orders vs fills
+
+```bash
+python run_quant.py reconcile --config config/example_config.json
+```
+
+### 5. Publish a static demo bundle
+
+```bash
+python run_quant.py publish-demo --config config/example_config.json
+```
+
+### 6. Build a preset comparison gallery
+
+```bash
+python run_quant.py gallery --config config/example_config.json
+```
+
+## Project Layout
+
+- `src/quant_research/`: core implementation
+- `config/`: sample and example configs
+- `data/`: sample inputs and local datasets
+- `docs/`: workflow docs and static landing material
+- `sql/wrds/`: WRDS extraction SQL
+- `tests/`: regression coverage
+
+## Notes
+
+- The project is local-first, not hosted SaaS.
+- The current hosted surface is a sample-demo Pages site, not a full multi-user product.
+- If you want external adoption, start by sharing `report_dashboard.html` and a cleaned config/output bundle.
+
+## WRDS Workflow
+
+See:
+
+- `docs/wrds_workflow.md`

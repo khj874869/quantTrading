@@ -345,6 +345,7 @@ def _load_daily_return_rows(path: Path, window_id: str) -> list[dict]:
                     "commission_cost": float(row.get("commission_cost", 0.0)),
                     "slippage_cost": float(row.get("slippage_cost", 0.0)),
                     "transaction_cost": float(row["transaction_cost"]),
+                    "short_borrow_cost": float(row.get("short_borrow_cost", 0.0)),
                 }
             )
     return rows
@@ -369,9 +370,11 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
             "total_cash_drag": 0.0,
             "average_cash_drag": 0.0,
             "total_transaction_cost": 0.0,
+            "total_short_borrow_cost": 0.0,
             "total_commission_cost": 0.0,
             "total_slippage_cost": 0.0,
             "average_transaction_cost": 0.0,
+            "average_short_borrow_cost": 0.0,
             "transaction_cost_drag": 0.0,
         }
     ordered_rows = sorted(rows, key=lambda row: row["date"])
@@ -386,6 +389,7 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
     cash_carries = []
     cash_drags = []
     transaction_costs = []
+    short_borrow_costs = []
     commission_costs = []
     slippage_costs = []
     max_drawdown = 0.0
@@ -402,6 +406,7 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
         cash_carries.append(row.get("cash_carry", 0.0))
         cash_drags.append(row.get("cash_drag", 0.0))
         transaction_costs.append(row["transaction_cost"])
+        short_borrow_costs.append(row.get("short_borrow_cost", 0.0))
         commission_costs.append(row.get("commission_cost", 0.0))
         slippage_costs.append(row.get("slippage_cost", 0.0))
     mean_return = sum(returns) / len(returns)
@@ -433,9 +438,11 @@ def _summarize_daily_return_rows(rows: list[dict]) -> dict[str, float]:
         "total_cash_drag": sum(cash_drags),
         "average_cash_drag": sum(cash_drags) / len(cash_drags),
         "total_transaction_cost": sum(transaction_costs),
+        "total_short_borrow_cost": sum(short_borrow_costs),
         "total_commission_cost": sum(commission_costs),
         "total_slippage_cost": sum(slippage_costs),
         "average_transaction_cost": sum(transaction_costs) / len(transaction_costs),
+        "average_short_borrow_cost": sum(short_borrow_costs) / len(short_borrow_costs),
         "transaction_cost_drag": (gross_equity - 1.0) - (equity - 1.0),
     }
 
@@ -461,6 +468,7 @@ def _write_walk_forward_daily_returns(path: Path, rows: list[dict]) -> None:
                 "commission_cost",
                 "slippage_cost",
                 "transaction_cost",
+                "short_borrow_cost",
             ],
         )
         writer.writeheader()
@@ -482,6 +490,7 @@ def _write_walk_forward_daily_returns(path: Path, rows: list[dict]) -> None:
                     "commission_cost": _format_value(row.get("commission_cost", 0.0)),
                     "slippage_cost": _format_value(row.get("slippage_cost", 0.0)),
                     "transaction_cost": _format_value(row["transaction_cost"]),
+                    "short_borrow_cost": _format_value(row.get("short_borrow_cost", 0.0)),
                 }
             )
 
@@ -655,9 +664,11 @@ def _summary_fieldnames(rows: list[dict]) -> list[str]:
         "max_drawdown",
         "average_turnover",
         "total_transaction_cost",
+        "total_short_borrow_cost",
         "total_commission_cost",
         "total_slippage_cost",
         "average_transaction_cost",
+        "average_short_borrow_cost",
         "transaction_cost_drag",
         "days",
     ]
@@ -684,8 +695,10 @@ _SUMMARY_KEYS = {
     "max_drawdown",
     "average_turnover",
     "total_transaction_cost",
+    "total_short_borrow_cost",
     "total_commission_cost",
     "total_slippage_cost",
     "average_transaction_cost",
+    "average_short_borrow_cost",
     "transaction_cost_drag",
 }

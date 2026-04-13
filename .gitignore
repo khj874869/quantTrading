@@ -7,6 +7,7 @@ __pycache__/
 output/
 config/output/
 test_output/
+docs/demo/
 
 external/
 

@@ -1,0 +1,2 @@
+rebalance_date,permno,side,filled_shares,fill_price,commission,exchange_fee,fill_timestamp
+2025-02-28,10001,BUY,9500,101.50,4.50,0.50,2025-02-28T15:59:00

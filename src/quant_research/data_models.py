@@ -20,3 +20,4 @@ class PortfolioDay:
     commission_cost: float
     slippage_cost: float
     transaction_cost: float
+    short_borrow_cost: float

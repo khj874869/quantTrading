@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 from .backtest import Backtester
 from .cache import PreparedDataCache
 from .config import Config
 from .data_sources import MarketDataFetcher
-from .exports import export_rebalance_signals
+from .execution import ExecutionReconciler
+from .exports import export_order_blotter, export_rebalance_signals, export_universe_snapshot
+from .gallery import StrategyGalleryBuilder
+from .manifest import RunManifestWriter
 from .pipeline import DataPipeline
+from .publishing import DemoPublisher
+from .reporting import PerformanceReporter
 from .research import apply_recommended_config, run_parameter_sweep, run_walk_forward_optimization, write_applied_recommended_config
 from .strategy import MultiSignalStrategy
+from .validation import DataValidator
 from .wrds_runner import WRDSExportRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Quant research stack")
-    parser.add_argument("command", choices=["fetch", "signals", "backtest", "wrds-export", "sweep", "walk-forward", "apply-recommended"])
+    parser.add_argument("command", choices=["fetch", "signals", "orders", "reconcile", "publish-demo", "gallery", "backtest", "report", "wrds-export", "sweep", "walk-forward", "apply-recommended", "validate"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--step")
     parser.add_argument("--dry-run", action="store_true")
@@ -29,8 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    argv = sys.argv[1:]
     config = Config.load(args.config)
+    requested_command = args.command
     effective_command = args.command
+    manifest_outputs: list[Path] = []
+    manifest_profile: dict[str, float] = {}
+    manifest_cache: dict[str, object] = {"used": False}
+    manifest_summary: dict[str, object] | None = None
+    manifest_extra: dict[str, object] = {}
     if args.command == "apply-recommended":
         original_config = config
         config = apply_recommended_config(config, args.recommended_config)
@@ -41,29 +56,127 @@ def main() -> None:
             output_path=args.applied_config_output,
         )
         print(applied_config_path)
+        manifest_outputs.append(applied_config_path)
+        manifest_extra["applied_recommended_config_path"] = str(applied_config_path)
+        manifest_extra["recommended_config_path"] = str(args.recommended_config) if args.recommended_config else None
         effective_command = args.target
+    manifest_writer = RunManifestWriter(config)
     if args.command == "fetch":
         outputs = MarketDataFetcher(config).fetch_all()
         for output in outputs:
             print(output)
+        manifest_outputs.extend(outputs)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
         return
     if args.command == "wrds-export":
         outputs = WRDSExportRunner(config).export(step=args.step, dry_run=args.dry_run)
         for output in outputs:
             print(output)
+        manifest_outputs.extend(outputs)
+        manifest_extra["dry_run"] = args.dry_run
+        if args.step:
+            manifest_extra["wrds_step"] = args.step
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if args.command == "validate":
+        outputs = DataValidator(config).run()
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if args.command == "publish-demo":
+        outputs, publish_summary = DemoPublisher(config).publish()
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        manifest_summary = publish_summary
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
         return
     if effective_command == "sweep":
         output_path = run_parameter_sweep(config)
         print(output_path)
+        manifest_outputs.append(output_path)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
         return
     if effective_command == "walk-forward":
         output_path = run_walk_forward_optimization(config)
         print(output_path)
+        manifest_outputs.append(output_path)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
         return
     if args.no_cache:
         pipeline = DataPipeline(config)
         prepared = pipeline.load()
-        _print_profile(pipeline.profile)
+        manifest_profile = pipeline.profile
+        manifest_cache = {"used": False, "no_cache": True}
+        _print_profile(manifest_profile)
     else:
         cache_result = PreparedDataCache(config).load_or_build()
         prepared = cache_result.prepared_data
@@ -71,11 +184,128 @@ def main() -> None:
         print(f"source_cache_hit={int(cache_result.source_cache_hit)}")
         print(f"feature_cache_hit={int(cache_result.feature_cache_hit)}")
         print(f"prepared_cache_hit={int(cache_result.prepared_cache_hit)}")
-        _print_profile(cache_result.profile)
+        manifest_profile = cache_result.profile
+        manifest_cache = {
+            "used": True,
+            "cache_hit": cache_result.cache_hit,
+            "source_cache_hit": cache_result.source_cache_hit,
+            "feature_cache_hit": cache_result.feature_cache_hit,
+            "prepared_cache_hit": cache_result.prepared_cache_hit,
+            "cache_path": str(cache_result.cache_path),
+        }
+        _print_profile(manifest_profile)
     output_dir = config.resolve_path(config.paths.get("output_dir", "output"))
+    universe_snapshot_path = export_universe_snapshot(
+        prepared,
+        output_dir,
+        benchmark_mode=str(config.strategy.get("benchmark_mode", "ff_total_return")),
+    )
     if effective_command == "signals":
         output_path = export_rebalance_signals(prepared, output_dir)
         print(output_path)
+        manifest_outputs.append(output_path)
+        manifest_outputs.append(universe_snapshot_path)
+        print(universe_snapshot_path)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if effective_command == "orders":
+        strategy = MultiSignalStrategy(config.strategy)
+        outputs = export_order_blotter(
+            prepared,
+            strategy,
+            output_dir,
+            blotter_notional=float(config.strategy.get("order_blotter_notional", config.strategy.get("slippage_notional", config.strategy.get("capacity_baseline_aum", 1_000_000.0)))),
+            order_type=str(config.strategy.get("order_blotter_order_type", "MOC")),
+        )
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        manifest_outputs.append(universe_snapshot_path)
+        print(universe_snapshot_path)
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if effective_command == "reconcile":
+        outputs, execution_summary = ExecutionReconciler(config, prepared, output_dir).run()
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        manifest_outputs.append(universe_snapshot_path)
+        print(universe_snapshot_path)
+        manifest_summary = execution_summary
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if effective_command == "report":
+        outputs, report_summary = PerformanceReporter(config, prepared, output_dir).run()
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        manifest_outputs.append(universe_snapshot_path)
+        print(universe_snapshot_path)
+        manifest_summary = report_summary
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
+        return
+    if effective_command == "gallery":
+        outputs, gallery_summary = StrategyGalleryBuilder(config, prepared).publish()
+        for output in outputs:
+            print(output)
+        manifest_outputs.extend(outputs)
+        manifest_summary = gallery_summary
+        _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+        )
         return
     strategy = MultiSignalStrategy(config.strategy)
     summary = Backtester(
@@ -86,6 +316,21 @@ def main() -> None:
         commission_cost_bps=float(config.strategy.get("commission_cost_bps", 0.0)),
         slippage_cost_bps=float(config.strategy.get("slippage_cost_bps", max(float(config.strategy.get("transaction_cost_bps", 10.0)) - float(config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
     ).run()
+    manifest_outputs.extend(_backtest_outputs(output_dir))
+    manifest_outputs.append(universe_snapshot_path)
+    manifest_summary = {key: float(value) for key, value in summary.items()}
+    _write_manifest(
+        manifest_writer,
+        args,
+        argv,
+        requested_command,
+        effective_command,
+        manifest_outputs,
+        summary=manifest_summary,
+        profile=manifest_profile,
+        cache=manifest_cache,
+        extra=manifest_extra,
+    )
     for key, value in summary.items():
         print(f"{key}={value:.8f}")
 
@@ -93,6 +338,49 @@ def main() -> None:
 def _print_profile(profile: dict[str, float]) -> None:
     for key, value in sorted(profile.items()):
         print(f"{key}={value:.6f}")
+
+
+def _write_manifest(
+    manifest_writer: RunManifestWriter,
+    args: argparse.Namespace,
+    argv: list[str],
+    requested_command: str,
+    executed_command: str,
+    outputs: list[Path],
+    summary: dict[str, object] | None,
+    profile: dict[str, float],
+    cache: dict[str, object],
+    extra: dict[str, object],
+) -> None:
+    manifest_path = manifest_writer.write(
+        args=args,
+        argv=argv,
+        requested_command=requested_command,
+        executed_command=executed_command,
+        outputs=outputs,
+        summary=summary,
+        profile=profile,
+        cache=cache,
+        extra=extra,
+    )
+    print(manifest_path)
+
+
+def _backtest_outputs(output_dir: Path) -> list[Path]:
+    return [
+        output_dir / "portfolio_rebalances.csv",
+        output_dir / "portfolio_daily_returns.csv",
+        output_dir / "summary.json",
+        output_dir / "execution_diagnostics.csv",
+        output_dir / "execution_diagnostics_by_bucket.csv",
+        output_dir / "execution_diagnostics_by_bucket_timeseries.csv",
+        output_dir / "execution_backlog_aging.csv",
+        output_dir / "execution_backlog_aging_events.csv",
+        output_dir / "execution_backlog_dropoff.csv",
+        output_dir / "execution_backlog_dropoff_events.csv",
+        output_dir / "execution_backlog_dropoff_timeseries.csv",
+        output_dir / "execution_backlog_dropoff_by_regime.csv",
+    ]
 
 
 if __name__ == "__main__":

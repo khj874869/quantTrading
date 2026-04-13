@@ -29,6 +29,12 @@ class Backtester:
         self.slippage_notional = max(float(strategy.config.get("slippage_notional", 1_000_000.0)), 0.0)
         self.slippage_adv_floor = max(float(strategy.config.get("slippage_adv_floor", 100_000.0)), 1.0)
         self.slippage_impact_bps_per_adv = max(float(strategy.config.get("slippage_impact_bps_per_adv", 50.0)), 0.0)
+        configured_impact_exponent = strategy.config.get("slippage_impact_exponent")
+        if configured_impact_exponent is None and self.slippage_model in {"square_root", "sqrt_liquidity_aware"}:
+            configured_impact_exponent = 0.5
+        if configured_impact_exponent is None:
+            configured_impact_exponent = 1.0
+        self.slippage_impact_exponent = min(max(float(configured_impact_exponent), 0.0), 2.0)
         self.max_trade_participation_ratio = max(float(strategy.config.get("max_trade_participation_ratio", 0.0)), 0.0)
         self.execution_backlog_carry_forward_enabled = bool(strategy.config.get("execution_backlog_carry_forward_enabled", False))
         self.execution_backlog_decay = min(max(float(strategy.config.get("execution_backlog_decay", 1.0)), 0.0), 1.0)
@@ -39,7 +45,10 @@ class Backtester:
         self.execution_priority_existing_sell = max(float(strategy.config.get("execution_priority_existing_sell", 1.0)), 0.0)
         self.execution_priority_new_sell = max(float(strategy.config.get("execution_priority_new_sell", 1.0)), 0.0)
         self.execution_backlog_age_half_life_rebalances = max(float(strategy.config.get("execution_backlog_age_half_life_rebalances", 0.0)), 0.0)
+        self.execution_days_per_rebalance = max(int(strategy.config.get("execution_days_per_rebalance", 1)), 1)
         self.cash_carry_enabled = bool(strategy.config.get("cash_carry_enabled", True))
+        self.short_borrow_cost_bps_annual = max(float(strategy.config.get("short_borrow_cost_bps_annual", 0.0)), 0.0)
+        self.short_borrow_cost_field = str(strategy.config.get("short_borrow_cost_field", "short_borrow_cost_bps_annual")).strip() or "short_borrow_cost_bps_annual"
         if commission_cost_bps is None and slippage_cost_bps is None:
             self.commission_cost_bps = 0.0
             self.slippage_cost_bps = transaction_cost_bps
@@ -58,14 +67,13 @@ class Backtester:
         execution_records: list[dict[str, float | str]] = []
 
         rows: list[PortfolioDay] = []
-        current_portfolio = None
         previous_weights: dict[str, float] = {}
+        current_target_portfolio = None
+        current_rebalance_rows: list[dict] = []
+        execution_days_remaining = 0
         previous_target_weights: dict[str, float] = {}
         previous_backlog_ages: dict[str, float] = {}
         realized_rebalance_turnovers: list[float] = []
-        pending_turnover = 0.0
-        pending_commission_cost = 0.0
-        pending_slippage_cost = 0.0
         rebalance_index = 0
         for current_date in daily_dates:
             while rebalance_index < len(rebalances) and rebalances[rebalance_index] <= current_date:
@@ -98,38 +106,52 @@ class Backtester:
                     )
                 )
                 implemented_portfolios[current_portfolio.rebalance_date] = current_portfolio
-                pending_turnover = self._compute_turnover(previous_weights, current_portfolio.weights)
-                pending_commission_cost = pending_turnover * (self.commission_cost_bps / 10000.0)
-                pending_slippage_cost = float((current_portfolio.metadata or {}).get("slippage_cost", pending_turnover * (self.slippage_cost_bps / 10000.0)))
-                previous_weights = dict(current_portfolio.weights)
+                planned_turnover = self._compute_turnover(previous_weights, current_portfolio.weights)
+                current_target_portfolio = current_portfolio
+                current_rebalance_rows = rebalance_rows
+                execution_days_remaining = self.execution_days_per_rebalance
                 if had_previous_weights:
-                    realized_rebalance_turnovers.append(pending_turnover)
+                    realized_rebalance_turnovers.append(planned_turnover)
                 rebalance_index += 1
-            if current_portfolio is None or not current_portfolio.weights:
+            if current_target_portfolio is None or (not current_target_portfolio.weights and not previous_weights):
                 continue
+            turnover = 0.0
+            commission_cost = 0.0
+            slippage_cost = 0.0
+            if execution_days_remaining > 0:
+                next_weights = self._execution_step_weights(
+                    previous_weights,
+                    current_target_portfolio.weights,
+                    execution_days_remaining,
+                )
+                turnover = self._compute_turnover(previous_weights, next_weights)
+                commission_cost = turnover * (self.commission_cost_bps / 10000.0)
+                slippage_cost = float(
+                    self._slippage_metadata(previous_weights, next_weights, current_rebalance_rows).get(
+                        "slippage_cost",
+                        turnover * (self.slippage_cost_bps / 10000.0),
+                    )
+                )
+                previous_weights = dict(next_weights)
+                execution_days_remaining -= 1
             security_returns = self.prepared_data.returns_by_date[current_date]
             benchmark_return = self.prepared_data.benchmark_by_date.get(current_date, 0.0)
             invested_return = sum(
                 weight * (benchmark_return if permno == "__BENCH__" else security_returns.get(permno, 0.0))
-                for permno, weight in current_portfolio.weights.items()
+                for permno, weight in previous_weights.items()
             )
             cash_rate = risk_free_by_date.get(current_date, 0.0) if self.cash_carry_enabled else 0.0
             cash_weight, cash_carry, cash_drag = self._cash_metrics(
-                current_portfolio.target_weights or {},
-                current_portfolio.weights,
+                current_target_portfolio.target_weights or current_target_portfolio.weights,
+                previous_weights,
                 security_returns,
                 benchmark_return,
                 cash_rate,
             )
             gross_return = invested_return + cash_carry
-            commission_cost = pending_commission_cost
-            slippage_cost = pending_slippage_cost
             transaction_cost = commission_cost + slippage_cost
-            turnover = pending_turnover
-            pending_commission_cost = 0.0
-            pending_slippage_cost = 0.0
-            pending_turnover = 0.0
-            net_return = gross_return - transaction_cost
+            short_borrow_cost = self._short_borrow_cost(previous_weights, current_rebalance_rows)
+            net_return = gross_return - transaction_cost - short_borrow_cost
             rows.append(
                 PortfolioDay(
                     date=current_date,
@@ -137,15 +159,16 @@ class Backtester:
                     net_return=net_return,
                     benchmark_return=benchmark_return,
                     active_return=net_return - benchmark_return,
-                    exposure=current_portfolio.exposure,
+                    exposure=current_target_portfolio.exposure,
                     cash_weight=cash_weight,
                     cash_carry=cash_carry,
-                    holdings=sum(1 for permno in current_portfolio.weights if permno != "__BENCH__"),
+                    holdings=sum(1 for permno in previous_weights if permno != "__BENCH__"),
                     turnover=turnover,
                     cash_drag=cash_drag,
                     commission_cost=commission_cost,
                     slippage_cost=slippage_cost,
                     transaction_cost=transaction_cost,
+                    short_borrow_cost=short_borrow_cost,
                 )
             )
         self._write_rebalance_weights(implemented_portfolios)
@@ -183,6 +206,7 @@ class Backtester:
                     "commission_cost",
                     "slippage_cost",
                     "transaction_cost",
+                    "short_borrow_cost",
                 ],
             )
             writer.writeheader()
@@ -203,6 +227,7 @@ class Backtester:
                         "commission_cost": f"{row.commission_cost:.8f}",
                         "slippage_cost": f"{row.slippage_cost:.8f}",
                         "transaction_cost": f"{row.transaction_cost:.8f}",
+                        "short_borrow_cost": f"{row.short_borrow_cost:.8f}",
                     }
                 )
 
@@ -787,9 +812,11 @@ class Backtester:
                 "total_cash_drag": 0.0,
                 "average_cash_drag": 0.0,
                 "total_transaction_cost": 0.0,
+                "total_short_borrow_cost": 0.0,
                 "total_commission_cost": 0.0,
                 "total_slippage_cost": 0.0,
                 "average_transaction_cost": 0.0,
+                "average_short_borrow_cost": 0.0,
                 "transaction_cost_drag": 0.0,
             }
         equity = 1.0
@@ -803,6 +830,7 @@ class Backtester:
         cash_carries = []
         cash_drags = []
         transaction_costs = []
+        short_borrow_costs = []
         commission_costs = []
         slippage_costs = []
         max_drawdown = 0.0
@@ -819,6 +847,7 @@ class Backtester:
             cash_carries.append(row.cash_carry)
             cash_drags.append(row.cash_drag)
             transaction_costs.append(row.transaction_cost)
+            short_borrow_costs.append(row.short_borrow_cost)
             commission_costs.append(row.commission_cost)
             slippage_costs.append(row.slippage_cost)
         mean_return = sum(returns) / len(returns)
@@ -850,14 +879,33 @@ class Backtester:
             "total_cash_drag": sum(cash_drags),
             "average_cash_drag": sum(cash_drags) / len(cash_drags),
             "total_transaction_cost": sum(transaction_costs),
+            "total_short_borrow_cost": sum(short_borrow_costs),
             "total_commission_cost": sum(commission_costs),
             "total_slippage_cost": sum(slippage_costs),
             "average_transaction_cost": sum(transaction_costs) / len(transaction_costs),
+            "average_short_borrow_cost": sum(short_borrow_costs) / len(short_borrow_costs),
             "transaction_cost_drag": (gross_equity - 1.0) - (equity - 1.0),
         }
         summary_path = self.output_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
+
+    def _short_borrow_cost(self, weights: dict[str, float], rebalance_rows: list[dict] | None = None) -> float:
+        if not weights:
+            return 0.0
+        lookup = {
+            row["permno"]: row
+            for row in (rebalance_rows or [])
+        }
+        total_cost = 0.0
+        for permno, weight in weights.items():
+            if permno == "__BENCH__" or weight >= 0.0:
+                continue
+            annual_bps = float(lookup.get(permno, {}).get(self.short_borrow_cost_field, self.short_borrow_cost_bps_annual) or self.short_borrow_cost_bps_annual)
+            if annual_bps <= 0.0:
+                continue
+            total_cost += abs(weight) * ((annual_bps / 252.0) / 10000.0)
+        return total_cost
 
     def _compute_turnover(self, old_weights: dict[str, float], new_weights: dict[str, float]) -> float:
         securities = set(old_weights) | set(new_weights)
@@ -1455,6 +1503,21 @@ class Backtester:
             if abs(weight) > 1e-12
         }
 
+    def _execution_step_weights(
+        self,
+        current_weights: dict[str, float],
+        target_weights: dict[str, float],
+        days_remaining: int,
+    ) -> dict[str, float]:
+        if days_remaining <= 1:
+            return dict(target_weights)
+        securities = set(current_weights) | set(target_weights)
+        stepped = {
+            permno: current_weights.get(permno, 0.0) + (target_weights.get(permno, 0.0) - current_weights.get(permno, 0.0)) / days_remaining
+            for permno in securities
+        }
+        return self._clean_weights(stepped)
+
     def _turnover_budget_metadata(self, target_portfolio, realized_rebalance_turnovers: list[float]) -> dict[str, float]:
         base_budget = max(float(self.strategy.config.get("max_turnover_per_rebalance", 0.0)), 0.0)
         adaptive_enabled = bool(self.strategy.config.get("adaptive_turnover_budget_enabled", False))
@@ -1484,7 +1547,7 @@ class Backtester:
     def _slippage_metadata(self, old_weights: dict[str, float], new_weights: dict[str, float], rebalance_rows: list[dict]) -> dict[str, float]:
         lookup = {row["permno"]: row for row in rebalance_rows}
         max_participation_ratio = self._portfolio_max_participation_ratio(old_weights, new_weights, lookup)
-        if self.slippage_model != "liquidity_aware":
+        if self.slippage_model == "fixed":
             turnover = self._compute_turnover(old_weights, new_weights)
             return {
                 "slippage_cost": turnover * (self.slippage_cost_bps / 10000.0),
@@ -1561,15 +1624,20 @@ class Backtester:
     def _asset_slippage_bps(self, permno: str, traded_weight: float, lookup: dict[str, dict]) -> tuple[float, float]:
         base_bps = self.slippage_cost_bps
         participation_ratio = self._participation_ratio(permno, traded_weight, lookup)
-        return base_bps + self.slippage_impact_bps_per_adv * participation_ratio, participation_ratio
+        return base_bps + self._impact_bps(participation_ratio), participation_ratio
 
     def _implemented_slippage_bps(self, permno: str, traded_weight: float, lookup: dict[str, dict]) -> float:
         if traded_weight <= 0.0:
             return 0.0
-        if self.slippage_model != "liquidity_aware":
+        if self.slippage_model == "fixed":
             return self.slippage_cost_bps
         asset_slippage_bps, _ = self._asset_slippage_bps(permno, traded_weight, lookup)
         return asset_slippage_bps
+
+    def _impact_bps(self, participation_ratio: float) -> float:
+        if participation_ratio <= 0.0 or self.slippage_model == "fixed":
+            return 0.0
+        return self.slippage_impact_bps_per_adv * (participation_ratio ** self.slippage_impact_exponent)
 
     def _participation_ratio(self, permno: str, traded_weight: float, lookup: dict[str, dict]) -> float:
         if permno == "__BENCH__" or self.slippage_notional <= 0.0:

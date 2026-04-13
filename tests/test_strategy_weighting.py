@@ -280,6 +280,118 @@ class StrategyWeightingTest(unittest.TestCase):
 
         self.assertEqual(set(portfolio.weights), {"10002"})
 
+    def test_optimizer_construction_overweights_stronger_alpha_name(self) -> None:
+        strategy = MultiSignalStrategy(
+            {
+                "holding_count": 2,
+                "long_short": False,
+                "portfolio_construction": "optimizer",
+                "optimizer_risk_aversion": 0.1,
+                "optimizer_turnover_penalty": 0.0,
+                "optimizer_iterations": 300,
+                "optimizer_step_size": 0.05,
+                "risk_weight_field": "idio_vol",
+                "risk_weight_floor": 0.05,
+                "max_position_weight": 0.8,
+            }
+        )
+        portfolio = strategy.build_weights(
+            date(2025, 1, 31),
+            [
+                {"permno": "10001", "risk_adjusted_score": 2.0, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "35", "beta": 1.0},
+                {"permno": "10002", "risk_adjusted_score": 0.5, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "28", "beta": 1.0},
+            ],
+        )
+
+        self.assertGreater(portfolio.weights.get("10001", 0.0), portfolio.weights.get("10002", 0.0))
+        self.assertAlmostEqual(sum(portfolio.weights.values()), 1.0, places=6)
+
+    def test_optimizer_turnover_penalty_keeps_more_weight_in_incumbent(self) -> None:
+        base_rows = [
+            {"permno": "10001", "risk_adjusted_score": 1.0, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "35", "beta": 1.0},
+            {"permno": "10002", "risk_adjusted_score": 1.2, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "28", "beta": 1.0},
+        ]
+        low_penalty = MultiSignalStrategy(
+            {
+                "holding_count": 2,
+                "long_short": False,
+                "portfolio_construction": "optimizer",
+                "optimizer_risk_aversion": 0.1,
+                "optimizer_turnover_penalty": 0.0,
+                "optimizer_iterations": 300,
+                "optimizer_step_size": 0.05,
+                "max_position_weight": 0.8,
+            }
+        )
+        high_penalty = MultiSignalStrategy(
+            {
+                "holding_count": 2,
+                "long_short": False,
+                "portfolio_construction": "optimizer",
+                "optimizer_risk_aversion": 0.1,
+                "optimizer_turnover_penalty": 5.0,
+                "optimizer_iterations": 300,
+                "optimizer_step_size": 0.05,
+                "max_position_weight": 0.8,
+            }
+        )
+
+        low_penalty_portfolio = low_penalty.build_weights(
+            date(2025, 2, 28),
+            base_rows,
+            previous_weights={"10001": 1.0},
+        )
+        high_penalty_portfolio = high_penalty.build_weights(
+            date(2025, 2, 28),
+            base_rows,
+            previous_weights={"10001": 1.0},
+        )
+
+        self.assertGreater(high_penalty_portfolio.weights.get("10001", 0.0), low_penalty_portfolio.weights.get("10001", 0.0))
+        self.assertAlmostEqual(sum(high_penalty_portfolio.weights.values()), 1.0, places=6)
+
+    def test_optimizer_covariance_penalty_prefers_less_correlated_name(self) -> None:
+        rows = [
+            {"permno": "10001", "risk_adjusted_score": 1.2, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "TECH", "beta": 1.0, "downside_beta": 1.0, "size": 1.0},
+            {"permno": "10002", "risk_adjusted_score": 1.1, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "TECH", "beta": 1.0, "downside_beta": 1.0, "size": 1.0},
+            {"permno": "10003", "risk_adjusted_score": 1.0, "idio_vol": 0.10, "macro_score": 1.0, "vix": 20.0, "sector": "UTIL", "beta": 0.2, "downside_beta": 0.2, "size": -1.0},
+        ]
+        low_covariance_penalty = MultiSignalStrategy(
+            {
+                "holding_count": 3,
+                "long_short": False,
+                "portfolio_construction": "optimizer",
+                "optimizer_risk_aversion": 0.1,
+                "optimizer_covariance_penalty": 0.0,
+                "optimizer_turnover_penalty": 0.0,
+                "optimizer_iterations": 400,
+                "optimizer_step_size": 0.05,
+                "max_position_weight": 0.8,
+            }
+        )
+        high_covariance_penalty = MultiSignalStrategy(
+            {
+                "holding_count": 3,
+                "long_short": False,
+                "portfolio_construction": "optimizer",
+                "optimizer_risk_aversion": 0.1,
+                "optimizer_covariance_penalty": 2.0,
+                "optimizer_covariance_fields": ["beta", "downside_beta", "size", "sector"],
+                "optimizer_turnover_penalty": 0.0,
+                "optimizer_iterations": 400,
+                "optimizer_step_size": 0.05,
+                "max_position_weight": 0.8,
+            }
+        )
+
+        low_penalty_portfolio = low_covariance_penalty.build_weights(date(2025, 1, 31), rows)
+        high_penalty_portfolio = high_covariance_penalty.build_weights(date(2025, 1, 31), rows)
+
+        self.assertGreater(high_penalty_portfolio.weights.get("10003", 0.0), low_penalty_portfolio.weights.get("10003", 0.0))
+        self.assertLess(high_penalty_portfolio.weights.get("10001", 0.0), low_penalty_portfolio.weights.get("10001", 0.0))
+        self.assertLess(high_penalty_portfolio.weights.get("10002", 0.0), low_penalty_portfolio.weights.get("10002", 0.0))
+        self.assertAlmostEqual(sum(high_penalty_portfolio.weights.values()), 1.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

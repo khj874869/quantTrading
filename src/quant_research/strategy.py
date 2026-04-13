@@ -27,17 +27,46 @@ class MultiSignalStrategy:
         self.entry_liquidity_penalty_scale = max(float(strategy_config.get("entry_liquidity_penalty_scale", 0.0)), 0.0)
         self.entry_liquidity_field = str(strategy_config.get("entry_liquidity_field", "liquidity_ratio")).strip() or "liquidity_ratio"
         self.entry_liquidity_floor = max(float(strategy_config.get("entry_liquidity_floor", 0.01)), 1e-9)
+        portfolio_construction = str(strategy_config.get("portfolio_construction", "heuristic")).strip().lower() or "heuristic"
+        self.portfolio_construction = portfolio_construction if portfolio_construction in {"heuristic", "optimizer"} else "heuristic"
         weighting_scheme = str(strategy_config.get("weighting_scheme", "equal")).strip().lower() or "equal"
         allowed_weighting_schemes = {"equal", "score", "inverse_vol", "score_inverse_vol"}
         self.weighting_scheme = weighting_scheme if weighting_scheme in allowed_weighting_schemes else "equal"
         self.risk_weight_field = str(strategy_config.get("risk_weight_field", "idio_vol")).strip() or "idio_vol"
         self.risk_weight_floor = max(float(strategy_config.get("risk_weight_floor", 0.10)), 1e-6)
         self.score_weight_floor = max(float(strategy_config.get("score_weight_floor", 0.05)), 1e-6)
+        self.optimizer_risk_aversion = max(float(strategy_config.get("optimizer_risk_aversion", 0.5)), 0.0)
+        self.optimizer_covariance_penalty = max(float(strategy_config.get("optimizer_covariance_penalty", 0.0)), 0.0)
+        configured_covariance_fields = strategy_config.get("optimizer_covariance_fields", ["beta", "downside_beta", "size", "sector"])
+        if not isinstance(configured_covariance_fields, list):
+            configured_covariance_fields = ["beta", "downside_beta", "size", "sector"]
+        self.optimizer_covariance_fields = [
+            str(field).strip()
+            for field in configured_covariance_fields
+            if str(field).strip()
+        ]
+        self.optimizer_turnover_penalty = max(float(strategy_config.get("optimizer_turnover_penalty", 0.25)), 0.0)
+        self.optimizer_iterations = max(int(strategy_config.get("optimizer_iterations", 200)), 1)
+        self.optimizer_step_size = max(float(strategy_config.get("optimizer_step_size", 0.05)), 1e-6)
         self.max_position_weight = max(float(strategy_config.get("max_position_weight", 0.0)), 0.0)
         self.liquidity_position_cap_ratio = max(float(strategy_config.get("liquidity_position_cap_ratio", 0.0)), 0.0)
         self.liquidity_position_cap_field = str(strategy_config.get("liquidity_position_cap_field", "avg_dollar_volume")).strip() or "avg_dollar_volume"
         self.liquidity_position_cap_floor = max(float(strategy_config.get("liquidity_position_cap_floor", strategy_config.get("slippage_adv_floor", 100_000.0))), 1.0)
         self.liquidity_position_cap_notional = max(float(strategy_config.get("liquidity_position_cap_notional", strategy_config.get("slippage_notional", 1_000_000.0))), 1.0)
+        self.short_min_avg_dollar_volume = max(float(strategy_config.get("short_min_avg_dollar_volume", 0.0)), 0.0)
+        self.short_min_market_cap = max(float(strategy_config.get("short_min_market_cap", 0.0)), 0.0)
+        self.short_min_liquidity_ratio = max(float(strategy_config.get("short_min_liquidity_ratio", 0.0)), 0.0)
+        self.short_locate_required = bool(strategy_config.get("short_locate_required", False))
+        self.short_locate_available_field = str(strategy_config.get("short_locate_available_field", "short_locate_available")).strip() or "short_locate_available"
+        self.short_locate_score_field = str(strategy_config.get("short_locate_score_field", "short_locate_score")).strip() or "short_locate_score"
+        self.short_locate_min_score = max(float(strategy_config.get("short_locate_min_score", 0.0)), 0.0)
+        self.short_max_borrow_cost_bps_annual = max(float(strategy_config.get("short_max_borrow_cost_bps_annual", 0.0)), 0.0)
+        self.short_borrow_cost_field = str(strategy_config.get("short_borrow_cost_field", "short_borrow_cost_bps_annual")).strip() or "short_borrow_cost_bps_annual"
+        self.short_exclude_sectors = {
+            str(value).strip()
+            for value in strategy_config.get("short_exclude_sectors", [])
+            if str(value).strip()
+        }
 
     def build_weights(self, rebalance_date: date, rows: list[dict], previous_weights: dict[str, float] | None = None) -> PortfolioWeights:
         previous_weights = previous_weights or {}
@@ -75,7 +104,7 @@ class MultiSignalStrategy:
                 selected_rows=[],
                 metadata={"selection_score_dispersion": self._score_dispersion(rows)},
             )
-        weights = self._build_side_weights(long_names, exposure, side="long")
+        weights = self._build_side_weights(long_names, exposure, side="long", previous_weights=previous_weights)
         selected_rows = list(long_names)
         metadata = {"selection_score_dispersion": self._score_dispersion(rows)}
         if self.config.get("long_short", False):
@@ -91,7 +120,7 @@ class MultiSignalStrategy:
                     selected_rows=selected_rows,
                     metadata=metadata,
                 )
-            short_weights = self._build_side_weights(short_names, exposure, side="short")
+            short_weights = self._build_side_weights(short_names, exposure, side="short", previous_weights=previous_weights)
             for permno, weight in short_weights.items():
                 weights[permno] = weights.get(permno, 0.0) + weight
             selected_rows.extend(short_names)
@@ -121,13 +150,16 @@ class MultiSignalStrategy:
         return self._select_sector_neutral(ranked, target_count, reverse=True, previous_weights=previous_weights, side="long", exposure=exposure)
 
     def _select_short_names(self, ranked: list[dict], target_count: int, previous_weights: dict[str, float], exposure: float) -> list[dict]:
+        eligible_ranked = [row for row in ranked if self._shorting_eligible(row)]
+        if not eligible_ranked:
+            return []
         if not self.config.get("sector_neutral", False):
             ordered = sorted(
-                ranked,
+                eligible_ranked,
                 key=lambda row: self._selection_score(row, previous_weights, side="short", target_count=target_count, exposure=exposure),
             )
             return self._select_with_entry_threshold(ordered, target_count, previous_weights, side="short", exposure=exposure)
-        return self._select_sector_neutral(ranked, target_count, reverse=False, previous_weights=previous_weights, side="short", exposure=exposure)
+        return self._select_sector_neutral(eligible_ranked, target_count, reverse=False, previous_weights=previous_weights, side="short", exposure=exposure)
 
     def _select_sector_neutral(
         self,
@@ -219,6 +251,41 @@ class MultiSignalStrategy:
 
     def _score_value(self, row: dict) -> float:
         return float(row.get(self.score_field, row.get("risk_adjusted_score", row.get("composite_score", 0.0))))
+
+    def _shorting_eligible(self, row: dict) -> bool:
+        sector = str(row.get("sector", "UNKNOWN"))
+        if sector in self.short_exclude_sectors:
+            return False
+        if float(row.get("avg_dollar_volume", 0.0)) < self.short_min_avg_dollar_volume:
+            return False
+        if float(row.get("market_cap", 0.0)) < self.short_min_market_cap:
+            return False
+        if float(row.get("liquidity_ratio", 0.0)) < self.short_min_liquidity_ratio:
+            return False
+        if self.short_locate_required and not self._short_locate_available(row):
+            return False
+        if self.short_max_borrow_cost_bps_annual > 0.0:
+            borrow_cost = float(row.get(self.short_borrow_cost_field, 0.0) or 0.0)
+            if borrow_cost > self.short_max_borrow_cost_bps_annual:
+                return False
+        return True
+
+    def _short_locate_available(self, row: dict) -> bool:
+        availability_value = row.get(self.short_locate_available_field)
+        if availability_value is not None:
+            return self._bool_value(availability_value)
+        locate_score = row.get(self.short_locate_score_field)
+        if locate_score is None:
+            return False
+        return float(locate_score) >= self.short_locate_min_score
+
+    def _bool_value(self, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value) != 0.0
+        text = str(value).strip().lower()
+        return text not in {"", "0", "false", "f", "no", "n", "off", "none", "na"}
 
     def _selection_score(
         self,
@@ -356,24 +423,197 @@ class MultiSignalStrategy:
         variance = sum((score - mean_score) ** 2 for score in scores) / len(scores)
         return math.sqrt(max(variance, 0.0))
 
-    def _build_side_weights(self, selected_rows: list[dict], exposure: float, side: str) -> dict[str, float]:
+    def _build_side_weights(
+        self,
+        selected_rows: list[dict],
+        exposure: float,
+        side: str,
+        previous_weights: dict[str, float] | None = None,
+    ) -> dict[str, float]:
         if not selected_rows or exposure <= 0:
             return {}
-        raw_weights = self._raw_side_weights(selected_rows, side)
-        total_raw = sum(raw_weights)
-        if total_raw <= 0:
-            raw_weights = [1.0 for _ in selected_rows]
-            total_raw = float(len(selected_rows))
-        normalized = {
-            row["permno"]: exposure * raw_weight / total_raw
-            for row, raw_weight in zip(selected_rows, raw_weights, strict=True)
-        }
-        capped = self._apply_position_cap(normalized, exposure, position_caps=self._position_caps(selected_rows, exposure))
+        previous_weights = previous_weights or {}
+        if self.portfolio_construction == "optimizer":
+            optimized = self._optimized_side_weights(selected_rows, exposure, side, previous_weights)
+            capped = self._apply_position_cap(optimized, exposure, position_caps=self._position_caps(selected_rows, exposure))
+        else:
+            raw_weights = self._raw_side_weights(selected_rows, side)
+            total_raw = sum(raw_weights)
+            if total_raw <= 0:
+                raw_weights = [1.0 for _ in selected_rows]
+                total_raw = float(len(selected_rows))
+            normalized = {
+                row["permno"]: exposure * raw_weight / total_raw
+                for row, raw_weight in zip(selected_rows, raw_weights, strict=True)
+            }
+            capped = self._apply_position_cap(normalized, exposure, position_caps=self._position_caps(selected_rows, exposure))
         sign = -1.0 if side == "short" else 1.0
         return {
             permno: sign * weight
             for permno, weight in capped.items()
         }
+
+    def _optimized_side_weights(
+        self,
+        selected_rows: list[dict],
+        exposure: float,
+        side: str,
+        previous_weights: dict[str, float],
+    ) -> dict[str, float]:
+        permnos = [row["permno"] for row in selected_rows]
+        alpha = self._optimizer_alpha_values(selected_rows, side)
+        risk = [
+            max(abs(float(row.get(self.risk_weight_field, 0.0))), self.risk_weight_floor)
+            for row in selected_rows
+        ]
+        covariance = self._optimizer_covariance_matrix(selected_rows)
+        position_caps = self._position_caps(selected_rows, exposure) or {permno: exposure for permno in permnos}
+        previous_side_weights = {
+            permno: (
+                max(previous_weights.get(permno, 0.0), 0.0)
+                if side == "long"
+                else abs(min(previous_weights.get(permno, 0.0), 0.0))
+            )
+            for permno in permnos
+        }
+        starting_weights = self._optimizer_starting_weights(permnos, previous_side_weights, exposure, position_caps)
+        weights = [starting_weights[permno] for permno in permnos]
+        previous = [previous_side_weights[permno] for permno in permnos]
+        caps = [position_caps.get(permno, exposure) for permno in permnos]
+        for _ in range(self.optimizer_iterations):
+            covariance_gradient = self._matrix_vector(covariance, weights)
+            gradient = [
+                alpha_value
+                - self.optimizer_risk_aversion * risk_value * weight
+                - self.optimizer_covariance_penalty * covariance_value
+                - self.optimizer_turnover_penalty * (weight - previous_weight)
+                for alpha_value, risk_value, weight, previous_weight, covariance_value in zip(alpha, risk, weights, previous, covariance_gradient, strict=True)
+            ]
+            updated = [
+                weight + self.optimizer_step_size * grad
+                for weight, grad in zip(weights, gradient, strict=True)
+            ]
+            weights = self._project_bounded_simplex(updated, exposure, caps)
+        return {
+            permno: weight
+            for permno, weight in zip(permnos, weights, strict=True)
+            if weight > 1e-12
+        }
+
+    def _optimizer_alpha_values(self, selected_rows: list[dict], side: str) -> list[float]:
+        scores = [self._score_value(row) for row in selected_rows]
+        if not scores:
+            return []
+        if side == "short":
+            anchor = max(scores)
+            return [max(anchor - score, 0.0) + self.score_weight_floor for score in scores]
+        anchor = min(scores)
+        return [max(score - anchor, 0.0) + self.score_weight_floor for score in scores]
+
+    def _optimizer_starting_weights(
+        self,
+        permnos: list[str],
+        previous_side_weights: dict[str, float],
+        exposure: float,
+        position_caps: dict[str, float],
+    ) -> dict[str, float]:
+        incumbent_total = sum(previous_side_weights.values())
+        if incumbent_total > 1e-12:
+            scaled = {
+                permno: exposure * previous_side_weights[permno] / incumbent_total
+                for permno in permnos
+            }
+            projected = self._project_bounded_simplex(
+                [scaled[permno] for permno in permnos],
+                exposure,
+                [position_caps.get(permno, exposure) for permno in permnos],
+            )
+            return {permno: weight for permno, weight in zip(permnos, projected, strict=True)}
+        equal_weight = exposure / max(len(permnos), 1)
+        projected = self._project_bounded_simplex(
+            [equal_weight for _ in permnos],
+            exposure,
+            [position_caps.get(permno, exposure) for permno in permnos],
+        )
+        return {permno: weight for permno, weight in zip(permnos, projected, strict=True)}
+
+    def _project_bounded_simplex(self, values: list[float], target_sum: float, upper_bounds: list[float]) -> list[float]:
+        if not values:
+            return []
+        bounded_caps = [max(cap, 0.0) for cap in upper_bounds]
+        if sum(bounded_caps) <= target_sum + 1e-12:
+            return bounded_caps
+        low = min(value - cap for value, cap in zip(values, bounded_caps, strict=True))
+        high = max(values)
+        for _ in range(80):
+            midpoint = 0.5 * (low + high)
+            projected = [
+                min(max(value - midpoint, 0.0), cap)
+                for value, cap in zip(values, bounded_caps, strict=True)
+            ]
+            projected_sum = sum(projected)
+            if projected_sum > target_sum:
+                low = midpoint
+            else:
+                high = midpoint
+        return [
+            min(max(value - high, 0.0), cap)
+            for value, cap in zip(values, bounded_caps, strict=True)
+        ]
+
+    def _optimizer_covariance_matrix(self, selected_rows: list[dict]) -> list[list[float]]:
+        vectors = self._optimizer_covariance_vectors(selected_rows)
+        if not vectors:
+            return [[0.0 for _ in selected_rows] for _ in selected_rows]
+        vector_width = len(vectors[0]) if vectors[0] else 0
+        if vector_width <= 0:
+            return [[0.0 for _ in selected_rows] for _ in selected_rows]
+        scale = 1.0 / vector_width
+        matrix = []
+        for left in vectors:
+            row = []
+            for right in vectors:
+                row.append(scale * sum(left_value * right_value for left_value, right_value in zip(left, right, strict=True)))
+            matrix.append(row)
+        return matrix
+
+    def _optimizer_covariance_vectors(self, selected_rows: list[dict]) -> list[list[float]]:
+        if not selected_rows or not self.optimizer_covariance_fields:
+            return []
+        numeric_fields = [field for field in self.optimizer_covariance_fields if field != "sector"]
+        columns: list[list[float]] = []
+        for field in numeric_fields:
+            values = [float(row.get(field, 0.0)) for row in selected_rows]
+            mean_value = sum(values) / len(values)
+            variance = sum((value - mean_value) ** 2 for value in values) / len(values)
+            std_value = math.sqrt(max(variance, 0.0))
+            if std_value <= 1e-12:
+                continue
+            columns.append([(value - mean_value) / std_value for value in values])
+        if "sector" in self.optimizer_covariance_fields:
+            sectors = sorted({str(row.get("sector", "UNKNOWN")) for row in selected_rows})
+            for sector in sectors:
+                indicator = [1.0 if str(row.get("sector", "UNKNOWN")) == sector else 0.0 for row in selected_rows]
+                mean_value = sum(indicator) / len(indicator)
+                variance = sum((value - mean_value) ** 2 for value in indicator) / len(indicator)
+                std_value = math.sqrt(max(variance, 0.0))
+                if std_value <= 1e-12:
+                    continue
+                columns.append([(value - mean_value) / std_value for value in indicator])
+        if not columns:
+            return [[0.0] for _ in selected_rows]
+        return [
+            [column[index] for column in columns]
+            for index in range(len(selected_rows))
+        ]
+
+    def _matrix_vector(self, matrix: list[list[float]], vector: list[float]) -> list[float]:
+        if not matrix:
+            return [0.0 for _ in vector]
+        return [
+            sum(value * weight for value, weight in zip(row, vector, strict=True))
+            for row in matrix
+        ]
 
     def _raw_side_weights(self, selected_rows: list[dict], side: str) -> list[float]:
         use_score_weights = self.weighting_scheme in {"score", "score_inverse_vol"}

@@ -56,6 +56,8 @@ class DataPipeline:
         self.beta_ewma_halflife_days = int(config.strategy.get("beta_ewma_halflife_days", 63))
         self.beta_shrinkage = float(config.strategy.get("beta_shrinkage", 0.0))
         self.beta_shrinkage_target = float(config.strategy.get("beta_shrinkage_target", 1.0))
+        benchmark_mode = str(config.strategy.get("benchmark_mode", "ff_total_return")).strip().lower() or "ff_total_return"
+        self.benchmark_mode = benchmark_mode if benchmark_mode in {"ff_total_return", "equal_weight_universe", "zero"} else "ff_total_return"
         self.risk_penalty_downside_beta_weight = float(config.strategy.get("risk_penalty_downside_beta_weight", 0.0))
         self.risk_penalty_idio_vol_weight = float(config.strategy.get("risk_penalty_idio_vol_weight", 0.0))
         self.feature_zscore_method = self._normalization_method(config.strategy.get("feature_zscore_method", "robust"))
@@ -68,6 +70,18 @@ class DataPipeline:
         self.regime_macro_threshold = float(config.strategy.get("regime_macro_threshold", 0.5))
         self.regime_macro_penalty_multiplier = float(config.strategy.get("regime_macro_penalty_multiplier", 1.5))
         self.regime_penalty_cap = float(config.strategy.get("regime_penalty_cap", 3.0))
+        self.min_avg_dollar_volume = max(float(config.strategy.get("min_avg_dollar_volume", 0.0)), 0.0)
+        self.universe_include_sectors = {
+            str(value).strip()
+            for value in config.strategy.get("universe_include_sectors", [])
+            if str(value).strip()
+        }
+        self.universe_exclude_sectors = {
+            str(value).strip()
+            for value in config.strategy.get("universe_exclude_sectors", [])
+            if str(value).strip()
+        }
+        self.universe_top_n_by_market_cap = max(int(config.strategy.get("universe_top_n_by_market_cap", 0)), 0)
         self.profile: dict[str, float] = {}
 
     def load(self) -> PreparedData:
@@ -120,7 +134,6 @@ class DataPipeline:
         started = perf_counter()
         mark = perf_counter()
         returns = self._build_returns(sources.prices)
-        benchmarks = {row["date"]: row["mktrf"] + row["rf"] for row in sources.factors}
         risk_free = {row["date"]: row["rf"] for row in sources.factors}
         self.profile["build_market_series_seconds"] = perf_counter() - mark
         mark = perf_counter()
@@ -135,6 +148,7 @@ class DataPipeline:
             macro=sources.macro,
             grades=sources.grades,
         )
+        benchmarks = self._build_benchmark_series(features, returns, sources.factors)
         self.profile["build_features_seconds"] = perf_counter() - mark
         self.profile["build_feature_panel_total_seconds"] = perf_counter() - started
         return FeaturePanel(
@@ -486,20 +500,11 @@ class DataPipeline:
         returns_by_date: dict[date, dict[str, float]],
         benchmark_by_date: dict[date, float],
     ) -> dict[str, float]:
-        lower_bound = rebalance_date.toordinal() - self.beta_lookback_days
-        security_returns: list[float] = []
-        benchmark_returns: list[float] = []
-        for day in sorted(returns_by_date):
-            if day >= rebalance_date:
-                break
-            if day.toordinal() < lower_bound:
-                continue
-            if permno not in returns_by_date[day] or day not in benchmark_by_date:
-                continue
-            security_returns.append(returns_by_date[day][permno])
-            benchmark_returns.append(benchmark_by_date[day])
-        if len(security_returns) < self.min_beta_observations:
+        return_pairs = self._historical_return_pairs(permno, rebalance_date, returns_by_date, benchmark_by_date)
+        if len(return_pairs) < self.min_beta_observations:
             return {"beta": 1.0, "downside_beta": 1.0, "idio_vol": 0.0}
+        security_returns = [security_return for security_return, _ in return_pairs]
+        benchmark_returns = [benchmark_return for _, benchmark_return in return_pairs]
         weights = self._beta_weights(len(security_returns))
         beta = self._weighted_beta(security_returns, benchmark_returns, weights)
         if beta is None:
@@ -534,6 +539,40 @@ class DataPipeline:
         )
         idio_vol = (residual_variance * 252.0) ** 0.5 if residual_variance > 0 else 0.0
         return {"beta": beta, "downside_beta": downside_beta, "idio_vol": idio_vol}
+
+    def _can_estimate_beta(
+        self,
+        permno: str,
+        rebalance_date: date,
+        returns_by_date: dict[date, dict[str, float]],
+        benchmark_by_date: dict[date, float],
+    ) -> bool:
+        return_pairs = self._historical_return_pairs(permno, rebalance_date, returns_by_date, benchmark_by_date)
+        if len(return_pairs) < self.min_beta_observations:
+            return False
+        security_returns = [security_return for security_return, _ in return_pairs]
+        benchmark_returns = [benchmark_return for _, benchmark_return in return_pairs]
+        weights = self._beta_weights(len(return_pairs))
+        return self._weighted_beta(security_returns, benchmark_returns, weights) is not None
+
+    def _historical_return_pairs(
+        self,
+        permno: str,
+        rebalance_date: date,
+        returns_by_date: dict[date, dict[str, float]],
+        benchmark_by_date: dict[date, float],
+    ) -> list[tuple[float, float]]:
+        lower_bound = rebalance_date.toordinal() - self.beta_lookback_days
+        pairs: list[tuple[float, float]] = []
+        for day in sorted(returns_by_date):
+            if day >= rebalance_date:
+                break
+            if day.toordinal() < lower_bound:
+                continue
+            if permno not in returns_by_date[day] or day not in benchmark_by_date:
+                continue
+            pairs.append((returns_by_date[day][permno], benchmark_by_date[day]))
+        return pairs
 
     def _weighted_beta(
         self,
@@ -714,11 +753,67 @@ class DataPipeline:
     def _apply_universe_filters(self, rows: list[dict]) -> list[dict]:
         minimum_price = self.config.strategy.get("min_price", 5.0)
         minimum_market_cap = self.config.strategy.get("min_market_cap", 100_000_000.0)
-        return [
+        filtered = [
             row
             for row in rows
-            if row["price"] >= minimum_price and row["market_cap"] >= minimum_market_cap
+            if row["price"] >= minimum_price
+            and row["market_cap"] >= minimum_market_cap
+            and row.get("avg_dollar_volume", 0.0) >= self.min_avg_dollar_volume
+            and (not self.universe_include_sectors or row.get("sector", "UNKNOWN") in self.universe_include_sectors)
+            and row.get("sector", "UNKNOWN") not in self.universe_exclude_sectors
         ]
+        if self.universe_top_n_by_market_cap > 0 and len(filtered) > self.universe_top_n_by_market_cap:
+            filtered = sorted(
+                filtered,
+                key=lambda row: (
+                    row.get("market_cap", 0.0),
+                    row.get("avg_dollar_volume", 0.0),
+                    row.get("permno", ""),
+                ),
+                reverse=True,
+            )[:self.universe_top_n_by_market_cap]
+        return filtered
+
+    def _build_benchmark_series(
+        self,
+        features_by_rebalance: dict[date, list[dict]],
+        returns_by_date: dict[date, dict[str, float]],
+        factors: list[dict],
+    ) -> dict[date, float]:
+        if self.benchmark_mode == "zero":
+            return {day: 0.0 for day in returns_by_date}
+        if self.benchmark_mode == "equal_weight_universe":
+            return self._build_equal_weight_universe_benchmark(features_by_rebalance, returns_by_date)
+        return {row["date"]: row["mktrf"] + row["rf"] for row in factors}
+
+    def _build_equal_weight_universe_benchmark(
+        self,
+        features_by_rebalance: dict[date, list[dict]],
+        returns_by_date: dict[date, dict[str, float]],
+    ) -> dict[date, float]:
+        benchmark_by_date: dict[date, float] = {}
+        rebalance_dates = sorted(features_by_rebalance)
+        rebalance_index = 0
+        current_universe: list[str] = []
+        for day in sorted(returns_by_date):
+            while rebalance_index < len(rebalance_dates) and rebalance_dates[rebalance_index] <= day:
+                rebalance_date = rebalance_dates[rebalance_index]
+                current_universe = [row["permno"] for row in features_by_rebalance.get(rebalance_date, [])]
+                rebalance_index += 1
+            if not current_universe:
+                benchmark_by_date[day] = 0.0
+                continue
+            available_returns = [
+                returns_by_date[day][permno]
+                for permno in current_universe
+                if permno in returns_by_date[day]
+            ]
+            benchmark_by_date[day] = (
+                sum(available_returns) / len(available_returns)
+                if available_returns
+                else 0.0
+            )
+        return benchmark_by_date
 
     def _normalize_feature_values(self, values: list[float]) -> list[float]:
         return normalize_cross_section(

@@ -106,6 +106,127 @@ class BacktestControlsTest(unittest.TestCase):
         self.assertGreater(float(second_rebalance_rows[0]["max_participation_ratio"]), 0.0)
         self.assertGreater(summary["total_slippage_cost"], 0.0012)
 
+    def test_multi_day_execution_splits_turnover_cost_and_cash_drag_across_days(self) -> None:
+        prepared = PreparedData(
+            features_by_rebalance={
+                date(2025, 1, 31): [
+                    {"permno": "10001", "risk_adjusted_score": 2.0, "avg_dollar_volume": 10_000_000.0, "macro_score": 1.0, "vix": 20.0, "sector": "35", "beta": 1.0},
+                    {"permno": "10002", "risk_adjusted_score": 1.0, "avg_dollar_volume": 10_000_000.0, "macro_score": 1.0, "vix": 20.0, "sector": "28", "beta": 1.0},
+                ],
+            },
+            returns_by_date={
+                date(2025, 2, 3): {"10001": 0.10, "10002": 0.0},
+                date(2025, 2, 4): {"10001": 0.10, "10002": 0.0},
+            },
+            benchmark_by_date={
+                date(2025, 2, 3): 0.0,
+                date(2025, 2, 4): 0.0,
+            },
+        )
+        strategy = MultiSignalStrategy(
+            {
+                "holding_count": 1,
+                "long_short": False,
+                "execution_days_per_rebalance": 2,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = Backtester(
+                prepared,
+                strategy,
+                output_dir=Path(tmp),
+                transaction_cost_bps=10.0,
+                commission_cost_bps=2.0,
+                slippage_cost_bps=8.0,
+            ).run()
+            with (Path(tmp) / "portfolio_daily_returns.csv").open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 2)
+        self.assertAlmostEqual(float(rows[0]["turnover"]), 0.25, places=8)
+        self.assertAlmostEqual(float(rows[1]["turnover"]), 0.25, places=8)
+        self.assertAlmostEqual(float(rows[0]["cash_weight"]), 0.5, places=8)
+        self.assertAlmostEqual(float(rows[1]["cash_weight"]), 0.0, places=8)
+        self.assertAlmostEqual(float(rows[0]["commission_cost"]), 0.00005, places=8)
+        self.assertAlmostEqual(float(rows[0]["slippage_cost"]), 0.00020, places=8)
+        self.assertAlmostEqual(float(rows[1]["commission_cost"]), 0.00005, places=8)
+        self.assertAlmostEqual(float(rows[1]["slippage_cost"]), 0.00020, places=8)
+        self.assertAlmostEqual(float(rows[0]["gross_return"]), 0.05, places=8)
+        self.assertAlmostEqual(float(rows[1]["gross_return"]), 0.10, places=8)
+        self.assertAlmostEqual(summary["total_transaction_cost"], 0.0005, places=8)
+        self.assertAlmostEqual(summary["average_turnover"], 0.25, places=8)
+
+    def test_square_root_slippage_softens_impact_relative_to_linear_model(self) -> None:
+        prepared = PreparedData(
+            features_by_rebalance={
+                date(2025, 1, 31): [
+                    {"permno": "10001", "risk_adjusted_score": 2.0, "avg_dollar_volume": 200000.0, "macro_score": 1.0, "vix": 20.0, "sector": "35", "beta": 1.0},
+                    {"permno": "10002", "risk_adjusted_score": 1.0, "avg_dollar_volume": 200000.0, "macro_score": 1.0, "vix": 20.0, "sector": "28", "beta": 1.0},
+                ],
+                date(2025, 2, 28): [
+                    {"permno": "10001", "risk_adjusted_score": 0.0, "avg_dollar_volume": 200000.0, "macro_score": 1.0, "vix": 20.0, "sector": "35", "beta": 1.0},
+                    {"permno": "10002", "risk_adjusted_score": 3.0, "avg_dollar_volume": 200000.0, "macro_score": 1.0, "vix": 20.0, "sector": "28", "beta": 1.0},
+                ],
+            },
+            returns_by_date={
+                date(2025, 2, 3): {"10001": 0.0, "10002": 0.0},
+                date(2025, 3, 3): {"10001": 0.0, "10002": 0.0},
+            },
+            benchmark_by_date={
+                date(2025, 2, 3): 0.0,
+                date(2025, 3, 3): 0.0,
+            },
+        )
+        linear_strategy = MultiSignalStrategy(
+            {
+                "holding_count": 1,
+                "long_short": False,
+                "slippage_model": "liquidity_aware",
+                "slippage_notional": 1000000.0,
+                "slippage_adv_floor": 100000.0,
+                "slippage_impact_bps_per_adv": 50.0,
+            }
+        )
+        sqrt_strategy = MultiSignalStrategy(
+            {
+                "holding_count": 1,
+                "long_short": False,
+                "slippage_model": "square_root",
+                "slippage_notional": 1000000.0,
+                "slippage_adv_floor": 100000.0,
+                "slippage_impact_bps_per_adv": 50.0,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            linear_summary = Backtester(
+                prepared,
+                linear_strategy,
+                output_dir=Path(tmp) / "linear",
+                transaction_cost_bps=10.0,
+                commission_cost_bps=2.0,
+                slippage_cost_bps=8.0,
+            ).run()
+            sqrt_summary = Backtester(
+                prepared,
+                sqrt_strategy,
+                output_dir=Path(tmp) / "sqrt",
+                transaction_cost_bps=10.0,
+                commission_cost_bps=2.0,
+                slippage_cost_bps=8.0,
+            ).run()
+            with ((Path(tmp) / "linear") / "portfolio_rebalances.csv").open("r", encoding="utf-8", newline="") as handle:
+                linear_rows = list(csv.DictReader(handle))
+            with ((Path(tmp) / "sqrt") / "portfolio_rebalances.csv").open("r", encoding="utf-8", newline="") as handle:
+                sqrt_rows = list(csv.DictReader(handle))
+
+        linear_rebalance = [row for row in linear_rows if row["rebalance_date"] == "2025-02-28"][0]
+        sqrt_rebalance = [row for row in sqrt_rows if row["rebalance_date"] == "2025-02-28"][0]
+        self.assertGreater(float(linear_rebalance["average_slippage_bps"]), float(sqrt_rebalance["average_slippage_bps"]))
+        self.assertGreater(float(sqrt_rebalance["average_slippage_bps"]), 8.0)
+        self.assertGreater(linear_summary["total_slippage_cost"], sqrt_summary["total_slippage_cost"])
+
     def test_participation_cap_partially_scales_rebalance_for_illiquid_trade(self) -> None:
         prepared = PreparedData(
             features_by_rebalance={
