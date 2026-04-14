@@ -20,7 +20,6 @@ class PipelineNormalizationTest(unittest.TestCase):
 
         self.assertGreater(abs(standard_scores[-1]), abs(robust_scores[-1]))
         self.assertLess(abs(robust_scores[-1]), 2.5)
-
     def test_pipeline_uses_feature_normalization_settings(self) -> None:
         pipeline = DataPipeline(Config.load(Path("config/sample_config.json")))
         values = [0.5, 0.6, 0.7, 10.0]

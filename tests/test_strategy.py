@@ -199,7 +199,6 @@ class StrategyTest(unittest.TestCase):
 
         pipeline.beta_method = "ols"
         ols_beta = pipeline._estimate_beta("10001", rebalance_date, returns_by_date, benchmark_by_date)
-
         pipeline.beta_method = "ewma"
         pipeline.beta_ewma_halflife_days = 1
         ewma_beta = pipeline._estimate_beta("10001", rebalance_date, returns_by_date, benchmark_by_date)
@@ -254,7 +253,6 @@ class StrategyTest(unittest.TestCase):
             date(2025, 1, 8): 0.02,
             date(2025, 1, 9): 0.01,
         }
-
         risk_metrics = pipeline._estimate_risk_metrics("10001", rebalance_date, returns_by_date, benchmark_by_date)
 
         self.assertGreater(risk_metrics["downside_beta"], risk_metrics["beta"])
@@ -312,7 +310,6 @@ class StrategyTest(unittest.TestCase):
         config = Config.load(Path("config/sample_config.json"))
         prepared = DataPipeline(config).load()
         self.assertIn(date(2025, 2, 28), prepared.features_by_rebalance)
-
 
 if __name__ == "__main__":
     unittest.main()
