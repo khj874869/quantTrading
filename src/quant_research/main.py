@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+from . import __version__
 from .backtest import Backtester
 from .cache import PreparedDataCache
 from .config import Config
@@ -20,17 +22,39 @@ from .strategy import MultiSignalStrategy
 from .validation import DataValidator
 from .wrds_runner import WRDSExportRunner
 
+COMMANDS = [
+    "fetch",
+    "signals",
+    "orders",
+    "reconcile",
+    "publish-demo",
+    "gallery",
+    "backtest",
+    "report",
+    "wrds-export",
+    "sweep",
+    "walk-forward",
+    "apply-recommended",
+    "validate",
+]
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Quant research stack")
-    parser.add_argument("command", choices=["fetch", "signals", "orders", "reconcile", "publish-demo", "gallery", "backtest", "report", "wrds-export", "sweep", "walk-forward", "apply-recommended", "validate"])
-    parser.add_argument("--config", required=True)
+    parser = argparse.ArgumentParser(
+        prog="quant-research",
+        description="Quant research stack",
+    )
+    parser.add_argument("command", choices=COMMANDS)
+    parser.add_argument("--config")
     parser.add_argument("--step")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--recommended-config")
     parser.add_argument("--applied-config-output")
     parser.add_argument("--target", choices=["signals", "backtest"], default="backtest")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--demo-site-dir")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 
@@ -38,7 +62,10 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     argv = sys.argv[1:]
-    config = Config.load(args.config)
+    config = Config.load(_resolve_config_path(parser, args)).with_path_overrides(
+        output_dir=args.output_dir,
+        demo_site_dir=args.demo_site_dir,
+    )
     requested_command = args.command
     effective_command = args.command
     manifest_outputs: list[Path] = []
@@ -381,6 +408,16 @@ def _backtest_outputs(output_dir: Path) -> list[Path]:
         output_dir / "execution_backlog_dropoff_timeseries.csv",
         output_dir / "execution_backlog_dropoff_by_regime.csv",
     ]
+
+
+def _resolve_config_path(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    if args.config:
+        return str(args.config)
+    env_config_path = os.getenv("QUANT_RESEARCH_CONFIG")
+    if env_config_path:
+        return env_config_path
+    parser.error("--config is required unless QUANT_RESEARCH_CONFIG is set")
+    raise AssertionError("argparse error should have exited")
 
 
 if __name__ == "__main__":

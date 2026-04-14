@@ -44,16 +44,24 @@ The stack currently supports:
 Install with Python 3.11+ and run from the repo root.
 
 ```bash
-python run_quant.py backtest --config config/sample_config.json
-python run_quant.py report --config config/sample_config.json
-python run_quant.py reconcile --config config/sample_config.json
-python run_quant.py publish-demo --config config/sample_config.json
-python run_quant.py gallery --config config/sample_config.json
+python -m pip install -e .[dev]
+quant-research backtest --config config/sample_config.json
+quant-research report --config config/sample_config.json
+quant-research reconcile --config config/sample_config.json
+quant-research publish-demo --config config/sample_config.json
+quant-research gallery --config config/sample_config.json
 ```
 
 The sample config is self-contained and intended as the fastest way to inspect the stack.
 
+If you prefer the module entrypoint after installation, `python -m quant_research ...` is also supported.
+The legacy `python run_quant.py ...` wrapper remains available for source checkouts that have not been installed yet.
+You can also set `QUANT_RESEARCH_CONFIG=config/sample_config.json` to avoid repeating `--config` on every command.
+Use `quant-research --version` to confirm the installed CLI version.
+Use `--output-dir` and `--demo-site-dir` when you want scratch runs or CI artifacts without editing the base config file.
+
 If you want a hosted demo, the repository now includes a GitHub Pages workflow at `.github/workflows/deploy-pages-demo.yml` that builds the sample bundle and deploys `docs/demo/`.
+The repository also includes `.github/workflows/ci.yml` to verify editable installs, the packaged CLI, and sample-data smoke runs across supported Python versions.
 
 ## Main Outputs
 
@@ -104,39 +112,39 @@ The fastest artifact to inspect is:
 ### 1. Validate data quality
 
 ```bash
-python run_quant.py validate --config config/example_config.json
+quant-research validate --config config/example_config.json
 ```
 
 ### 2. Generate signals or orders
 
 ```bash
-python run_quant.py signals --config config/example_config.json
-python run_quant.py orders --config config/example_config.json
+quant-research signals --config config/example_config.json
+quant-research orders --config config/example_config.json
 ```
 
 ### 3. Run backtest and report
 
 ```bash
-python run_quant.py backtest --config config/example_config.json
-python run_quant.py report --config config/example_config.json
+quant-research backtest --config config/example_config.json
+quant-research report --config config/example_config.json
 ```
 
 ### 4. Reconcile expected orders vs fills
 
 ```bash
-python run_quant.py reconcile --config config/example_config.json
+quant-research reconcile --config config/example_config.json
 ```
 
 ### 5. Publish a static demo bundle
 
 ```bash
-python run_quant.py publish-demo --config config/example_config.json
+quant-research publish-demo --config config/example_config.json
 ```
 
 ### 6. Build a preset comparison gallery
 
 ```bash
-python run_quant.py gallery --config config/example_config.json
+quant-research gallery --config config/example_config.json
 ```
 
 ## Project Layout

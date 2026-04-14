@@ -3,9 +3,6 @@ name: Deploy Sample Demo
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
 
 permissions:
   contents: read
@@ -18,6 +15,7 @@ concurrency:
 
 jobs:
   build-demo:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,11 +31,11 @@ jobs:
 
       - name: Build sample research outputs
         run: |
-          python run_quant.py backtest --config config/sample_config.json
-          python run_quant.py report --config config/sample_config.json
-          python run_quant.py reconcile --config config/sample_config.json
-          python run_quant.py publish-demo --config config/sample_config.json
-          python run_quant.py gallery --config config/sample_config.json
+          quant-research backtest --config config/sample_config.json --output-dir output/pages-output
+          quant-research report --config config/sample_config.json --output-dir output/pages-output
+          quant-research reconcile --config config/sample_config.json --output-dir output/pages-output
+          quant-research publish-demo --config config/sample_config.json --output-dir output/pages-output --demo-site-dir docs/demo
+          quant-research gallery --config config/sample_config.json --output-dir output/pages-output --demo-site-dir docs/demo
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -48,6 +46,7 @@ jobs:
           path: docs/demo
 
   deploy-demo:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -11,22 +11,35 @@ import sys
 
 sys.path.insert(0, str((Path(__file__).resolve().parents[1] / "src")))
 
+from quant_research.config import Config
 from quant_research.main import main
 
 
-class ManifestTest(unittest.TestCase):
-    def test_backtest_writes_run_manifest(self) -> None:
+class PathOverrideTest(unittest.TestCase):
+    def test_config_can_override_output_paths_without_mutating_original(self) -> None:
+        config = Config(
+            path=Path("config.json"),
+            raw={"paths": {"output_dir": "output", "demo_site_dir": "docs/demo"}},
+        )
+
+        overridden = config.with_path_overrides(output_dir="alt-output", demo_site_dir="alt-demo")
+
+        self.assertEqual(config.paths["output_dir"], "output")
+        self.assertEqual(config.paths["demo_site_dir"], "docs/demo")
+        self.assertEqual(overridden.paths["output_dir"], "alt-output")
+        self.assertEqual(overridden.paths["demo_site_dir"], "alt-demo")
+
+    def test_cli_output_dir_override_routes_artifacts(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
             temp_root = Path(tmp)
+            output_dir = temp_root / "override-output"
             config_path = temp_root / "config.json"
-            output_dir = temp_root / "output"
-            cache_dir = output_dir / "cache"
             config_path.write_text(
                 json.dumps(
                     {
                         "paths": {
-                            "output_dir": str(output_dir),
+                            "output_dir": str(temp_root / "ignored-output"),
                             "compustat_quarterly": str(repo_root / "data" / "sample_compustat_quarterly.csv"),
                             "crsp_daily": str(repo_root / "data" / "sample_crsp_daily.csv"),
                             "ccm_link": str(repo_root / "data" / "sample_ccm_link.csv"),
@@ -39,14 +52,7 @@ class ManifestTest(unittest.TestCase):
                             "cboe_vix": str(repo_root / "data" / "sample_cboe_vix.csv"),
                             "fmp_grades": str(repo_root / "data" / "sample_fmp_grades.csv"),
                         },
-                        "api": {
-                            "fred_api_key": "fred-secret",
-                            "fmp_api_key": "fmp-secret",
-                        },
-                        "cache": {
-                            "enabled": True,
-                            "cache_dir": str(cache_dir),
-                        },
+                        "cache": {"enabled": True, "cache_dir": str(temp_root / "cache")},
                         "strategy": {
                             "rebalance_frequency": "monthly",
                             "holding_count": 1,
@@ -86,33 +92,28 @@ class ManifestTest(unittest.TestCase):
                             "start_date": "2024-01-01",
                             "end_date": "2025-12-31",
                         },
-                    },
-                    indent=2,
+                    }
                 ),
                 encoding="utf-8",
             )
 
             stdout = io.StringIO()
-            with patch.object(sys, "argv", ["run_quant.py", "backtest", "--config", str(config_path)]):
+            argv = [
+                "quant-research",
+                "validate",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output_dir),
+            ]
+            with patch.object(sys, "argv", argv):
                 with redirect_stdout(stdout):
                     main()
 
-            manifest_path = output_dir / "run_manifest.json"
-            self.assertTrue(manifest_path.exists())
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue((output_dir / "validation_summary.json").exists())
+            self.assertTrue((output_dir / "run_manifest.json").exists())
+            self.assertFalse((temp_root / "ignored-output" / "validation_summary.json").exists())
 
-        self.assertEqual(payload["requested_command"], "backtest")
-        self.assertEqual(payload["executed_command"], "backtest")
-        self.assertEqual(payload["command_options"]["config"], str(config_path))
-        self.assertTrue(payload["cache"]["used"])
-        self.assertIn("cache_hit", payload["cache"])
-        self.assertEqual(payload["config"]["redacted"]["api"]["fred_api_key"], "***REDACTED***")
-        self.assertEqual(payload["config"]["redacted"]["api"]["fmp_api_key"], "***REDACTED***")
-        self.assertIn(str(output_dir / "portfolio_daily_returns.csv"), payload["outputs"])
-        self.assertIn(str(output_dir / "summary.json"), payload["outputs"])
-        self.assertIn("combined_metadata_fingerprint", payload["inputs"])
-        self.assertIn("sharpe", payload["summary"])
-        self.assertIn("commit", payload["git"])
 
 if __name__ == "__main__":
     unittest.main()
