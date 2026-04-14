@@ -32,6 +32,18 @@ class ConfigUpgradeTest(unittest.TestCase):
                 config = Config.load(config_path)
                 self.assertEqual(config.resolve("data_dir"), data_dir.resolve())
 
+    def test_resolve_path_expands_posix_style_environment_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "env-data"
+            data_dir.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({"paths": {"data_dir": "$QUANT_TEST_DATA"}}), encoding="utf-8")
+
+            with patch.dict(os.environ, {"QUANT_TEST_DATA": str(data_dir)}, clear=False):
+                config = Config.load(config_path)
+                self.assertEqual(config.resolve("data_dir"), data_dir.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

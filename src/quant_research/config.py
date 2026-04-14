@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,4 +59,14 @@ class Config:
 
 
 def _expand_path(value: str | Path) -> Path:
-    return Path(os.path.expandvars(str(value))).expanduser()
+    expanded = _expand_percent_vars(str(value))
+    expanded = os.path.expandvars(expanded)
+    return Path(expanded).expanduser()
+
+
+def _expand_percent_vars(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return os.environ.get(key, match.group(0))
+
+    return re.sub(r"%([^%]+)%", replace, value)
