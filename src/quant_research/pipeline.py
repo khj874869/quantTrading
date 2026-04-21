@@ -98,7 +98,7 @@ class DataPipeline:
         self.profile["build_prepared_total_seconds"] = perf_counter() - build_started
         self.profile["pipeline_total_seconds"] = perf_counter() - started
         return prepared
-        
+
     def load_sources(self) -> SourceData:
         started = perf_counter()
         fundamentals = self._load_compustat()

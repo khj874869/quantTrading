@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from .backtest import Backtester
 from .cache import PreparedDataCache
 from .config import Config
 from .data_sources import MarketDataFetcher
+from .doctor import ConfigDoctor
 from .execution import ExecutionReconciler
 from .exports import export_order_blotter, export_rebalance_signals, export_universe_snapshot
 from .gallery import StrategyGalleryBuilder
@@ -24,6 +26,7 @@ from .wrds_runner import WRDSExportRunner
 
 COMMANDS = [
     "fetch",
+    "doctor",
     "signals",
     "orders",
     "reconcile",
@@ -54,6 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target", choices=["signals", "backtest"], default="backtest")
     parser.add_argument("--output-dir")
     parser.add_argument("--demo-site-dir")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--profile-row-limit", type=int, default=1000)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -105,6 +111,41 @@ def main() -> None:
             cache=manifest_cache,
             extra=manifest_extra,
         )
+        return
+    if args.command == "doctor":
+        outputs, doctor_summary = ConfigDoctor(config, profile_row_limit=args.profile_row_limit).run()
+        manifest_outputs.extend(outputs)
+        manifest_summary = doctor_summary
+        if not args.json:
+            for output in outputs:
+                print(output)
+            for check in doctor_summary["checks"]:
+                print(f"{check['status']} {check['category']}.{check['name']}: {check['message']}")
+        manifest_path = _write_manifest(
+            manifest_writer,
+            args,
+            argv,
+            requested_command,
+            effective_command,
+            manifest_outputs,
+            summary=manifest_summary,
+            profile=manifest_profile,
+            cache=manifest_cache,
+            extra=manifest_extra,
+            print_path=not args.json,
+        )
+        exit_code = _doctor_exit_code(doctor_summary, strict=args.strict)
+        if args.json:
+            json_payload = {
+                **doctor_summary,
+                "strict": args.strict,
+                "exit_code": exit_code,
+                "outputs": [str(output) for output in outputs],
+                "manifest_path": str(manifest_path),
+            }
+            print(json.dumps(json_payload, indent=2))
+        if exit_code:
+            raise SystemExit(1)
         return
     if args.command == "wrds-export":
         outputs = WRDSExportRunner(config).export(step=args.step, dry_run=args.dry_run)
@@ -378,7 +419,8 @@ def _write_manifest(
     profile: dict[str, float],
     cache: dict[str, object],
     extra: dict[str, object],
-) -> None:
+    print_path: bool = True,
+) -> Path:
     manifest_path = manifest_writer.write(
         args=args,
         argv=argv,
@@ -390,7 +432,17 @@ def _write_manifest(
         cache=cache,
         extra=extra,
     )
-    print(manifest_path)
+    if print_path:
+        print(manifest_path)
+    return manifest_path
+
+
+def _doctor_exit_code(summary: dict[str, object], strict: bool) -> int:
+    if summary["status"] == "fail":
+        return 1
+    if strict and summary["status"] == "warn":
+        return 1
+    return 0
 
 
 def _backtest_outputs(output_dir: Path) -> list[Path]:

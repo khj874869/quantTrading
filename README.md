@@ -27,6 +27,7 @@ This project goes further:
 The stack currently supports:
 
 - `validate`: data quality diagnostics and rebalance coverage checks
+- `doctor`: fast config, input path, CSV schema, sample-row parsing, lightweight data profiling, strategy sanity, and output path readiness checks
 - `signals`: rebalance signal export
 - `orders`: order blotter generation
 - `reconcile`: compare expected orders vs broker fills
@@ -45,6 +46,7 @@ Install with Python 3.11+ and run from the repo root.
 
 ```bash
 python -m pip install -e .[dev]
+quant-research doctor --config config/sample_config.json
 quant-research backtest --config config/sample_config.json
 quant-research report --config config/sample_config.json
 quant-research reconcile --config config/sample_config.json
@@ -61,12 +63,15 @@ Use `quant-research --version` to confirm the installed CLI version.
 Use `--output-dir` and `--demo-site-dir` when you want scratch runs or CI artifacts without editing the base config file.
 
 If you want a hosted demo, the repository now includes a GitHub Pages workflow at `.github/workflows/deploy-pages-demo.yml` that builds the sample bundle and deploys `docs/demo/`.
-The repository also includes `.github/workflows/ci.yml` to verify editable installs, the packaged CLI, and sample-data smoke runs across supported Python versions.
+The repository also includes `.github/workflows/ci.yml` to verify editable installs, the packaged CLI, strict doctor checks, and sample-data smoke runs across supported Python versions.
 
 ## Main Outputs
 
 Common files written under the configured `output_dir`:
 
+- `doctor_report.json`
+- `doctor_report.csv`
+- `doctor_report.html` with status filters
 - `validation_summary.json`
 - `rebalance_signals.csv`
 - `portfolio_rebalances.csv`
@@ -92,6 +97,20 @@ The fastest artifact to inspect is:
 
 - `config/output/report_dashboard.html`
 
+## Doctor Checks
+
+Run `doctor` before heavier validation, backtests, or CI smoke runs when you want a fast readiness check.
+
+```bash
+quant-research doctor --config config/example_config.json
+quant-research doctor --config config/example_config.json --strict --json
+quant-research doctor --config config/example_config.json --profile-row-limit 100
+```
+
+`doctor` checks configured input paths, required CSV headers, sample row date and numeric parsing, required-column blank rates, output directory writability, and core strategy settings. By default it profiles up to 1000 rows per CSV; use `--profile-row-limit` to trade speed against broader sampling.
+
+The command writes JSON, CSV, and filterable HTML reports under `output_dir`. `--strict` exits nonzero on warnings as well as failures, which is useful for CI.
+
 ## Research Features
 
 - Universe filters with sector include/exclude and top-N market-cap controls
@@ -112,6 +131,9 @@ The fastest artifact to inspect is:
 ### 1. Validate data quality
 
 ```bash
+quant-research doctor --config config/example_config.json
+quant-research doctor --config config/example_config.json --strict --json
+quant-research doctor --config config/example_config.json --profile-row-limit 100
 quant-research validate --config config/example_config.json
 ```
 
