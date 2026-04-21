@@ -63,7 +63,7 @@ Use `quant-research --version` to confirm the installed CLI version.
 Use `--output-dir` and `--demo-site-dir` when you want scratch runs or CI artifacts without editing the base config file.
 
 If you want a hosted demo, the repository now includes a GitHub Pages workflow at `.github/workflows/deploy-pages-demo.yml` that builds the sample bundle and deploys `docs/demo/`.
-The workflow asks GitHub to enable Pages for Actions-based publishing; if your repository policy blocks that, enable Pages manually in repository settings and select GitHub Actions as the source.
+The workflow asks GitHub to enable Pages for Actions-based publishing and always uploads the built site as an artifact; if your repository policy blocks automatic enablement, enable Pages manually in repository settings and select GitHub Actions as the source.
 The repository also includes `.github/workflows/ci.yml` to verify editable installs, the packaged CLI, strict doctor checks, and sample-data smoke runs across supported Python versions.
 
 ## Main Outputs
