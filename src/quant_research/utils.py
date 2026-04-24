@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
@@ -165,3 +166,27 @@ def pct_change(current: float | None, previous: float | None) -> float | None:
     if current is None or previous in (None, 0):
         return None
     return (current - previous) / abs(previous)
+
+
+def resolve_backtest_costs(strategy: Mapping[str, object]) -> dict[str, float]:
+    transaction_cost_bps = float(strategy.get("transaction_cost_bps", 10.0))
+    commission_cost_bps = max(float(strategy.get("commission_cost_bps", 0.0)), 0.0)
+    slippage_default = max(transaction_cost_bps - commission_cost_bps, 0.0)
+    slippage_cost_bps = max(float(strategy.get("slippage_cost_bps", slippage_default)), 0.0)
+    return {
+        "transaction_cost_bps": transaction_cost_bps,
+        "commission_cost_bps": commission_cost_bps,
+        "slippage_cost_bps": slippage_cost_bps,
+    }
+
+
+def resolve_order_blotter_settings(strategy: Mapping[str, object]) -> dict[str, float | str]:
+    return {
+        "blotter_notional": float(
+            strategy.get(
+                "order_blotter_notional",
+                strategy.get("slippage_notional", strategy.get("capacity_baseline_aum", 1_000_000.0)),
+            )
+        ),
+        "order_type": str(strategy.get("order_blotter_order_type", "MOC")),
+    }

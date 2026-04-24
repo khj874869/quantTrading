@@ -1,0 +1,49 @@
+Quant Research Stack Proprietary License
+
+Copyright (c) 2026 Quant Research Stack contributors.
+All rights reserved.
+
+1. License grant
+
+Subject to a valid commercial agreement or written permission from the copyright holder, the licensee may:
+
+- install and use the software for internal research and portfolio analysis;
+- make a reasonable number of backup copies for operational continuity;
+- modify the software for the licensee's own internal use, unless the commercial agreement says otherwise.
+
+2. Restrictions
+
+Unless a separate written agreement explicitly allows it, the licensee may not:
+
+- redistribute, sublicense, resell, rent, lease, or host the software for third parties;
+- publish source code, packaged builds, or substantial portions of the software outside the licensed organization;
+- remove copyright, attribution, or proprietary notices;
+- use the software in a way that violates the terms of any third-party data provider connected to the workflow;
+- represent the software as investment advice, a fiduciary service, or a regulated brokerage or advisory product.
+
+3. Third-party data and services
+
+The software can operate on external datasets and APIs, including market, macro, broker, and vendor-supplied research data.
+The licensee is solely responsible for:
+
+- obtaining lawful access to those datasets and APIs;
+- complying with redistribution, retention, and display restrictions imposed by those providers;
+- validating that imported data is accurate, complete, and fit for the intended use case.
+
+4. Research-use boundary
+
+The software is a research and backtesting toolkit.
+It is not a promise of future performance.
+It does not guarantee profitability, suitability, or regulatory compliance for any investment activity.
+
+5. Warranty disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+6. Limitation of liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER AND CONTRIBUTORS WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, DATA, REVENUE, TRADING LOSSES, OR BUSINESS INTERRUPTION, ARISING OUT OF OR RELATED TO THE SOFTWARE OR ITS USE.
+
+7. Agreement precedence
+
+If the licensee has executed a commercial agreement, order form, or statement of work covering this software, that document controls to the extent of any conflict with this file.

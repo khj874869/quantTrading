@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import html
 import json
 from datetime import datetime
@@ -12,7 +11,7 @@ from .pipeline import PreparedData
 from .publishing import DemoPublisher
 from .reporting import PerformanceReporter
 from .strategy import MultiSignalStrategy
-from .utils import ensure_directory
+from .utils import ensure_directory, resolve_backtest_costs
 
 
 DEFAULT_GALLERY_PRESETS = [
@@ -75,22 +74,12 @@ class StrategyGalleryBuilder:
         outputs: list[Path] = []
 
         base_strategy = MultiSignalStrategy(self.config.strategy)
+        base_costs = resolve_backtest_costs(self.config.strategy)
         Backtester(
             self.prepared_data,
             base_strategy,
             output_dir=self.output_dir,
-            transaction_cost_bps=float(self.config.strategy.get("transaction_cost_bps", 10.0)),
-            commission_cost_bps=float(self.config.strategy.get("commission_cost_bps", 0.0)),
-            slippage_cost_bps=float(
-                self.config.strategy.get(
-                    "slippage_cost_bps",
-                    max(
-                        float(self.config.strategy.get("transaction_cost_bps", 10.0))
-                        - float(self.config.strategy.get("commission_cost_bps", 0.0)),
-                        0.0,
-                    ),
-                )
-            ),
+            **base_costs,
         ).run()
         PerformanceReporter(self.config, self.prepared_data, self.output_dir).run()
         root_outputs, _ = DemoPublisher(self.config).publish()
@@ -139,22 +128,12 @@ class StrategyGalleryBuilder:
             strategy_overrides=overrides,
         )
         strategy = MultiSignalStrategy(preset_config.strategy)
+        preset_costs = resolve_backtest_costs(preset_config.strategy)
         backtest_summary = Backtester(
             self.prepared_data,
             strategy,
             output_dir=preset_output_dir,
-            transaction_cost_bps=float(preset_config.strategy.get("transaction_cost_bps", 10.0)),
-            commission_cost_bps=float(preset_config.strategy.get("commission_cost_bps", 0.0)),
-            slippage_cost_bps=float(
-                preset_config.strategy.get(
-                    "slippage_cost_bps",
-                    max(
-                        float(preset_config.strategy.get("transaction_cost_bps", 10.0))
-                        - float(preset_config.strategy.get("commission_cost_bps", 0.0)),
-                        0.0,
-                    ),
-                )
-            ),
+            **preset_costs,
         ).run()
         _, report_summary = PerformanceReporter(preset_config, self.prepared_data, preset_output_dir).run()
         preset_outputs, bundle_summary = DemoPublisher(preset_config).publish()
@@ -210,16 +189,13 @@ class StrategyGalleryBuilder:
                 )
             if presets:
                 return presets
-        return copy.deepcopy(DEFAULT_GALLERY_PRESETS)
+        return [dict(preset, overrides=dict(preset.get("overrides", {}))) for preset in DEFAULT_GALLERY_PRESETS]
 
     def _preset_config(self, output_dir: Path, demo_dir: Path, strategy_overrides: dict[str, object]) -> Config:
-        raw = copy.deepcopy(self.config.raw)
-        raw.setdefault("paths", {})
-        raw.setdefault("strategy", {})
-        raw["paths"]["output_dir"] = str(output_dir)
-        raw["paths"]["demo_site_dir"] = str(demo_dir)
-        raw["strategy"].update(strategy_overrides)
-        return Config(path=self.config.path, raw=raw)
+        return self.config.with_path_overrides(
+            output_dir=output_dir,
+            demo_site_dir=demo_dir,
+        ).with_strategy_overrides(**strategy_overrides)
 
     def _assign_tags(self, cards: list[dict[str, object]]) -> None:
         if not cards:

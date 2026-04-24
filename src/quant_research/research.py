@@ -12,11 +12,11 @@ from .backtest import Backtester
 from .cache import PreparedDataCache
 from .config import Config
 from .strategy import MultiSignalStrategy
-from .utils import ensure_directory, parse_date
+from .utils import ensure_directory, parse_date, resolve_backtest_costs
 
 
 def run_parameter_sweep(config: Config) -> Path:
-    sweep_config = config.raw.get("sweep", {})
+    sweep_config = config.sweep
     strategy_grid = sweep_config.get("strategy_grid", {})
     combinations = _expand_strategy_grid(strategy_grid)
     output_dir = config.resolve_path(config.paths.get("output_dir", "output"))
@@ -30,13 +30,12 @@ def run_parameter_sweep(config: Config) -> Path:
         run_config = _with_strategy_overrides(config, overrides)
         prepared = PreparedDataCache(run_config).load_or_build().prepared_data
         run_dir = sweep_dir / f"run_{run_index:03d}"
+        costs = resolve_backtest_costs(run_config.strategy)
         summary = Backtester(
             prepared,
             MultiSignalStrategy(run_config.strategy),
             output_dir=run_dir,
-            transaction_cost_bps=float(run_config.strategy.get("transaction_cost_bps", 10.0)),
-            commission_cost_bps=float(run_config.strategy.get("commission_cost_bps", 0.0)),
-            slippage_cost_bps=float(run_config.strategy.get("slippage_cost_bps", max(float(run_config.strategy.get("transaction_cost_bps", 10.0)) - float(run_config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
+            **costs,
         ).run()
         results.append(
             {
@@ -62,8 +61,8 @@ def run_parameter_sweep(config: Config) -> Path:
 
 
 def run_walk_forward_optimization(config: Config) -> Path:
-    sweep_config = config.raw.get("sweep", {})
-    walk_forward_config = config.raw.get("walk_forward", {})
+    sweep_config = config.sweep
+    walk_forward_config = config.walk_forward
     strategy_grid = sweep_config.get("strategy_grid", {})
     combinations = _expand_strategy_grid(strategy_grid)
     windows = _resolve_walk_forward_windows(config)
@@ -212,11 +211,7 @@ def _expand_strategy_grid(strategy_grid: dict) -> list[dict]:
 
 
 def _with_strategy_overrides(config: Config, overrides: dict) -> Config:
-    raw = deepcopy(config.raw)
-    strategy = dict(raw.get("strategy", {}))
-    strategy.update(overrides)
-    raw["strategy"] = strategy
-    return Config(path=config.path, raw=raw)
+    return config.with_strategy_overrides(**overrides)
 
 
 def _resolve_recommended_config_path(config: Config, recommendation_path: str | Path | None) -> Path:
@@ -244,7 +239,7 @@ def _with_strategy_period(config: Config, start_date: date, end_date: date) -> C
 
 
 def _resolve_walk_forward_windows(config: Config) -> list[dict[str, date]]:
-    walk_forward_config = config.raw.get("walk_forward", {})
+    walk_forward_config = config.walk_forward
     explicit_windows = walk_forward_config.get("windows", [])
     if explicit_windows:
         return [
@@ -298,13 +293,12 @@ def _add_months(value: date, months: int) -> date:
 
 def _run_backtest(config: Config, output_dir: Path) -> dict[str, float]:
     prepared = PreparedDataCache(config).load_or_build().prepared_data
+    costs = resolve_backtest_costs(config.strategy)
     return Backtester(
         prepared,
         MultiSignalStrategy(config.strategy),
         output_dir=output_dir,
-        transaction_cost_bps=float(config.strategy.get("transaction_cost_bps", 10.0)),
-        commission_cost_bps=float(config.strategy.get("commission_cost_bps", 0.0)),
-        slippage_cost_bps=float(config.strategy.get("slippage_cost_bps", max(float(config.strategy.get("transaction_cost_bps", 10.0)) - float(config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
+        **costs,
     ).run()
 
 

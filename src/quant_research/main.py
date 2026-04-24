@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__
@@ -16,11 +17,12 @@ from .execution import ExecutionReconciler
 from .exports import export_order_blotter, export_rebalance_signals, export_universe_snapshot
 from .gallery import StrategyGalleryBuilder
 from .manifest import RunManifestWriter
-from .pipeline import DataPipeline
+from .pipeline import DataPipeline, PreparedData
 from .publishing import DemoPublisher
 from .reporting import PerformanceReporter
 from .research import apply_recommended_config, run_parameter_sweep, run_walk_forward_optimization, write_applied_recommended_config
 from .strategy import MultiSignalStrategy
+from .utils import resolve_backtest_costs, resolve_order_blotter_settings
 from .validation import DataValidator
 from .wrds_runner import WRDSExportRunner
 
@@ -40,6 +42,21 @@ COMMANDS = [
     "apply-recommended",
     "validate",
 ]
+
+
+@dataclass(slots=True)
+class CliState:
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+    argv: list[str]
+    config: Config
+    requested_command: str
+    effective_command: str
+    manifest_outputs: list[Path] = field(default_factory=list)
+    manifest_profile: dict[str, float] = field(default_factory=dict)
+    manifest_cache: dict[str, object] = field(default_factory=lambda: {"used": False})
+    manifest_summary: dict[str, object] | None = None
+    manifest_extra: dict[str, object] = field(default_factory=dict)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,78 +84,74 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    argv = sys.argv[1:]
+    state = _build_cli_state(parser, args, sys.argv[1:])
+    _apply_recommended_target(state)
+    manifest_writer = RunManifestWriter(state.config)
+    if _run_fast_command(state, manifest_writer):
+        return
+    prepared, output_dir, universe_snapshot_path = _load_runtime_data(state)
+    _run_prepared_command(state, manifest_writer, prepared, output_dir, universe_snapshot_path)
+
+
+def _build_cli_state(parser: argparse.ArgumentParser, args: argparse.Namespace, argv: list[str]) -> CliState:
     config = Config.load(_resolve_config_path(parser, args)).with_path_overrides(
         output_dir=args.output_dir,
         demo_site_dir=args.demo_site_dir,
     )
-    requested_command = args.command
-    effective_command = args.command
-    manifest_outputs: list[Path] = []
-    manifest_profile: dict[str, float] = {}
-    manifest_cache: dict[str, object] = {"used": False}
-    manifest_summary: dict[str, object] | None = None
-    manifest_extra: dict[str, object] = {}
-    if args.command == "apply-recommended":
-        original_config = config
-        config = apply_recommended_config(config, args.recommended_config)
-        applied_config_path = write_applied_recommended_config(
-            original_config,
-            config,
-            recommendation_path=args.recommended_config,
-            output_path=args.applied_config_output,
-        )
-        print(applied_config_path)
-        manifest_outputs.append(applied_config_path)
-        manifest_extra["applied_recommended_config_path"] = str(applied_config_path)
-        manifest_extra["recommended_config_path"] = str(args.recommended_config) if args.recommended_config else None
-        effective_command = args.target
-    manifest_writer = RunManifestWriter(config)
-    if args.command == "fetch":
-        outputs = MarketDataFetcher(config).fetch_all()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+    return CliState(
+        parser=parser,
+        args=args,
+        argv=argv,
+        config=config,
+        requested_command=args.command,
+        effective_command=args.command,
+    )
+
+
+def _apply_recommended_target(state: CliState) -> None:
+    if state.requested_command != "apply-recommended":
         return
-    if args.command == "doctor":
-        outputs, doctor_summary = ConfigDoctor(config, profile_row_limit=args.profile_row_limit).run()
-        manifest_outputs.extend(outputs)
-        manifest_summary = doctor_summary
-        if not args.json:
-            for output in outputs:
-                print(output)
+    original_config = state.config
+    state.config = apply_recommended_config(state.config, state.args.recommended_config)
+    applied_config_path = write_applied_recommended_config(
+        original_config,
+        state.config,
+        recommendation_path=state.args.recommended_config,
+        output_path=state.args.applied_config_output,
+    )
+    print(applied_config_path)
+    state.manifest_outputs.append(applied_config_path)
+    state.manifest_extra["applied_recommended_config_path"] = str(applied_config_path)
+    state.manifest_extra["recommended_config_path"] = (
+        str(state.args.recommended_config) if state.args.recommended_config else None
+    )
+    state.effective_command = state.args.target
+
+
+def _run_fast_command(state: CliState, manifest_writer: RunManifestWriter) -> bool:
+    if state.requested_command == "fetch":
+        outputs = MarketDataFetcher(state.config).fetch_all()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        _write_state_manifest(manifest_writer, state)
+        return True
+    if state.requested_command == "doctor":
+        outputs, doctor_summary = ConfigDoctor(
+            state.config,
+            profile_row_limit=state.args.profile_row_limit,
+        ).run()
+        state.manifest_outputs.extend(outputs)
+        state.manifest_summary = doctor_summary
+        if not state.args.json:
+            _print_paths(outputs)
             for check in doctor_summary["checks"]:
                 print(f"{check['status']} {check['category']}.{check['name']}: {check['message']}")
-        manifest_path = _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-            print_path=not args.json,
-        )
-        exit_code = _doctor_exit_code(doctor_summary, strict=args.strict)
-        if args.json:
+        manifest_path = _write_state_manifest(manifest_writer, state, print_path=not state.args.json)
+        exit_code = _doctor_exit_code(doctor_summary, strict=state.args.strict)
+        if state.args.json:
             json_payload = {
                 **doctor_summary,
-                "strict": args.strict,
+                "strict": state.args.strict,
                 "exit_code": exit_code,
                 "outputs": [str(output) for output in outputs],
                 "manifest_path": str(manifest_path),
@@ -146,114 +159,60 @@ def main() -> None:
             print(json.dumps(json_payload, indent=2))
         if exit_code:
             raise SystemExit(1)
-        return
-    if args.command == "wrds-export":
-        outputs = WRDSExportRunner(config).export(step=args.step, dry_run=args.dry_run)
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_extra["dry_run"] = args.dry_run
-        if args.step:
-            manifest_extra["wrds_step"] = args.step
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
-        return
-    if args.command == "validate":
-        outputs = DataValidator(config).run()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
-        return
-    if args.command == "publish-demo":
-        outputs, publish_summary = DemoPublisher(config).publish()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_summary = publish_summary
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
-        return
-    if effective_command == "sweep":
-        output_path = run_parameter_sweep(config)
+        return True
+    if state.requested_command == "wrds-export":
+        outputs = WRDSExportRunner(state.config).export(step=state.args.step, dry_run=state.args.dry_run)
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_extra["dry_run"] = state.args.dry_run
+        if state.args.step:
+            state.manifest_extra["wrds_step"] = state.args.step
+        _write_state_manifest(manifest_writer, state)
+        return True
+    if state.requested_command == "validate":
+        outputs = DataValidator(state.config).run()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        _write_state_manifest(manifest_writer, state)
+        return True
+    if state.requested_command == "publish-demo":
+        outputs, publish_summary = DemoPublisher(state.config).publish()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_summary = publish_summary
+        _write_state_manifest(manifest_writer, state)
+        return True
+    if state.effective_command == "sweep":
+        output_path = run_parameter_sweep(state.config)
         print(output_path)
-        manifest_outputs.append(output_path)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
-        return
-    if effective_command == "walk-forward":
-        output_path = run_walk_forward_optimization(config)
+        state.manifest_outputs.append(output_path)
+        _write_state_manifest(manifest_writer, state)
+        return True
+    if state.effective_command == "walk-forward":
+        output_path = run_walk_forward_optimization(state.config)
         print(output_path)
-        manifest_outputs.append(output_path)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
-        return
-    if args.no_cache:
-        pipeline = DataPipeline(config)
+        state.manifest_outputs.append(output_path)
+        _write_state_manifest(manifest_writer, state)
+        return True
+    return False
+
+
+def _load_runtime_data(state: CliState) -> tuple[PreparedData, Path, Path]:
+    if state.args.no_cache:
+        pipeline = DataPipeline(state.config)
         prepared = pipeline.load()
-        manifest_profile = pipeline.profile
-        manifest_cache = {"used": False, "no_cache": True}
-        _print_profile(manifest_profile)
+        state.manifest_profile = pipeline.profile
+        state.manifest_cache = {"used": False, "no_cache": True}
+        _print_profile(state.manifest_profile)
     else:
-        cache_result = PreparedDataCache(config).load_or_build()
+        cache_result = PreparedDataCache(state.config).load_or_build()
         prepared = cache_result.prepared_data
         print(f"cache_hit={int(cache_result.cache_hit)}")
         print(f"source_cache_hit={int(cache_result.source_cache_hit)}")
         print(f"feature_cache_hit={int(cache_result.feature_cache_hit)}")
         print(f"prepared_cache_hit={int(cache_result.prepared_cache_hit)}")
-        manifest_profile = cache_result.profile
-        manifest_cache = {
+        state.manifest_profile = cache_result.profile
+        state.manifest_cache = {
             "used": True,
             "cache_hit": cache_result.cache_hit,
             "source_cache_hit": cache_result.source_cache_hit,
@@ -261,146 +220,111 @@ def main() -> None:
             "prepared_cache_hit": cache_result.prepared_cache_hit,
             "cache_path": str(cache_result.cache_path),
         }
-        _print_profile(manifest_profile)
-    output_dir = config.resolve_path(config.paths.get("output_dir", "output"))
+        _print_profile(state.manifest_profile)
+    output_dir = state.config.resolve_path(state.config.paths.get("output_dir", "output"))
     universe_snapshot_path = export_universe_snapshot(
         prepared,
         output_dir,
-        benchmark_mode=str(config.strategy.get("benchmark_mode", "ff_total_return")),
+        benchmark_mode=str(state.config.strategy.get("benchmark_mode", "ff_total_return")),
     )
-    if effective_command == "signals":
+    return prepared, output_dir, universe_snapshot_path
+
+
+def _run_prepared_command(
+    state: CliState,
+    manifest_writer: RunManifestWriter,
+    prepared: PreparedData,
+    output_dir: Path,
+    universe_snapshot_path: Path,
+) -> None:
+    if state.effective_command == "signals":
         output_path = export_rebalance_signals(prepared, output_dir)
         print(output_path)
-        manifest_outputs.append(output_path)
-        manifest_outputs.append(universe_snapshot_path)
+        state.manifest_outputs.append(output_path)
+        state.manifest_outputs.append(universe_snapshot_path)
         print(universe_snapshot_path)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+        _write_state_manifest(manifest_writer, state)
         return
-    if effective_command == "orders":
-        strategy = MultiSignalStrategy(config.strategy)
+    if state.effective_command == "orders":
+        strategy = MultiSignalStrategy(state.config.strategy)
+        blotter_settings = resolve_order_blotter_settings(state.config.strategy)
         outputs = export_order_blotter(
             prepared,
             strategy,
             output_dir,
-            blotter_notional=float(config.strategy.get("order_blotter_notional", config.strategy.get("slippage_notional", config.strategy.get("capacity_baseline_aum", 1_000_000.0)))),
-            order_type=str(config.strategy.get("order_blotter_order_type", "MOC")),
+            blotter_notional=float(blotter_settings["blotter_notional"]),
+            order_type=str(blotter_settings["order_type"]),
         )
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_outputs.append(universe_snapshot_path)
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_outputs.append(universe_snapshot_path)
         print(universe_snapshot_path)
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+        _write_state_manifest(manifest_writer, state)
         return
-    if effective_command == "reconcile":
-        outputs, execution_summary = ExecutionReconciler(config, prepared, output_dir).run()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_outputs.append(universe_snapshot_path)
+    if state.effective_command == "reconcile":
+        outputs, execution_summary = ExecutionReconciler(state.config, prepared, output_dir).run()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_outputs.append(universe_snapshot_path)
         print(universe_snapshot_path)
-        manifest_summary = execution_summary
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+        state.manifest_summary = execution_summary
+        _write_state_manifest(manifest_writer, state)
         return
-    if effective_command == "report":
-        outputs, report_summary = PerformanceReporter(config, prepared, output_dir).run()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_outputs.append(universe_snapshot_path)
+    if state.effective_command == "report":
+        outputs, report_summary = PerformanceReporter(state.config, prepared, output_dir).run()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_outputs.append(universe_snapshot_path)
         print(universe_snapshot_path)
-        manifest_summary = report_summary
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+        state.manifest_summary = report_summary
+        _write_state_manifest(manifest_writer, state)
         return
-    if effective_command == "gallery":
-        outputs, gallery_summary = StrategyGalleryBuilder(config, prepared).publish()
-        for output in outputs:
-            print(output)
-        manifest_outputs.extend(outputs)
-        manifest_summary = gallery_summary
-        _write_manifest(
-            manifest_writer,
-            args,
-            argv,
-            requested_command,
-            effective_command,
-            manifest_outputs,
-            summary=manifest_summary,
-            profile=manifest_profile,
-            cache=manifest_cache,
-            extra=manifest_extra,
-        )
+    if state.effective_command == "gallery":
+        outputs, gallery_summary = StrategyGalleryBuilder(state.config, prepared).publish()
+        _print_paths(outputs)
+        state.manifest_outputs.extend(outputs)
+        state.manifest_summary = gallery_summary
+        _write_state_manifest(manifest_writer, state)
         return
-    strategy = MultiSignalStrategy(config.strategy)
+    strategy = MultiSignalStrategy(state.config.strategy)
+    costs = resolve_backtest_costs(state.config.strategy)
     summary = Backtester(
         prepared,
         strategy,
         output_dir=output_dir,
-        transaction_cost_bps=float(config.strategy.get("transaction_cost_bps", 10.0)),
-        commission_cost_bps=float(config.strategy.get("commission_cost_bps", 0.0)),
-        slippage_cost_bps=float(config.strategy.get("slippage_cost_bps", max(float(config.strategy.get("transaction_cost_bps", 10.0)) - float(config.strategy.get("commission_cost_bps", 0.0)), 0.0))),
+        **costs,
     ).run()
-    manifest_outputs.extend(_backtest_outputs(output_dir))
-    manifest_outputs.append(universe_snapshot_path)
-    manifest_summary = {key: float(value) for key, value in summary.items()}
-    _write_manifest(
-        manifest_writer,
-        args,
-        argv,
-        requested_command,
-        effective_command,
-        manifest_outputs,
-        summary=manifest_summary,
-        profile=manifest_profile,
-        cache=manifest_cache,
-        extra=manifest_extra,
-    )
+    state.manifest_outputs.extend(_backtest_outputs(output_dir))
+    state.manifest_outputs.append(universe_snapshot_path)
+    state.manifest_summary = {key: float(value) for key, value in summary.items()}
+    _write_state_manifest(manifest_writer, state)
     for key, value in summary.items():
         print(f"{key}={value:.8f}")
+
+
+def _print_paths(paths: list[Path]) -> None:
+    for path in paths:
+        print(path)
+
+
+def _write_state_manifest(
+    manifest_writer: RunManifestWriter,
+    state: CliState,
+    print_path: bool = True,
+) -> Path:
+    return _write_manifest(
+        manifest_writer,
+        state.args,
+        state.argv,
+        state.requested_command,
+        state.effective_command,
+        state.manifest_outputs,
+        summary=state.manifest_summary,
+        profile=state.manifest_profile,
+        cache=state.manifest_cache,
+        extra=state.manifest_extra,
+        print_path=print_path,
+    )
 
 
 def _print_profile(profile: dict[str, float]) -> None:

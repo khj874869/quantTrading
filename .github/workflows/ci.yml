@@ -50,6 +50,12 @@ jobs:
       - name: Install package
         run: python -m pip install -e .[dev]
 
+      - name: Build distribution artifacts
+        run: python -m build --sdist --wheel
+
+      - name: Verify distribution contents
+        run: pytest -q tests/test_distribution_artifacts.py
+
       - name: Doctor sample config
         run: quant-research doctor --config config/sample_config.json --output-dir test_output/ci-doctor --strict --json
 

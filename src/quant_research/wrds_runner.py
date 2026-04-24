@@ -31,7 +31,7 @@ class WRDSConfigError(RuntimeError):
 class WRDSExportRunner:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.wrds_config = config.raw.get("wrds", {})
+        self.wrds_config = config.wrds
 
     def export(self, step: str | None = None, dry_run: bool = False) -> list[Path]:
         specs = self._load_specs()

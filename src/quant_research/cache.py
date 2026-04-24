@@ -65,7 +65,7 @@ class CacheResult:
 class PreparedDataCache:
     def __init__(self, config: Config) -> None:
         self.config = config
-        cache_config = config.raw.get("cache", {})
+        cache_config = config.cache
         self.enabled = bool(cache_config.get("enabled", True))
         self.cache_dir = config.resolve_path(cache_config.get("cache_dir", "output/cache"))
 
@@ -186,6 +186,7 @@ class PreparedDataCache:
             feature_cache_hit=feature_cache_hit,
             prepared_cache_hit=False,
         )
+
     def _source_fingerprint(self) -> str:
         source_paths = []
         for key, value in sorted(self.config.paths.items()):
@@ -207,6 +208,7 @@ class PreparedDataCache:
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
+
     def _prepared_fingerprint(self, feature_fingerprint: str) -> str:
         payload = {
             "cache_version": CACHE_VERSION,
@@ -246,4 +248,3 @@ class PreparedDataCache:
     def _read(self, path: Path) -> dict:
         with path.open("rb") as handle:
             return pickle.load(handle)
- 

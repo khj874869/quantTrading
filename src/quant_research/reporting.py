@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import Config
 from .pipeline import PreparedData
-from .utils import ensure_directory, parse_date, read_csv_dicts, write_csv_dicts
+from .utils import ensure_directory, parse_date, read_csv_dicts, resolve_backtest_costs, write_csv_dicts
 
 
 DIAGNOSTIC_FACTORS = {
@@ -307,7 +307,7 @@ class PerformanceReporter:
         worst_month = min(monthly_rows, key=lambda row: float(row["net_total_return"]), default=None)
         feasible_capacity_rows = [row for row in capacity_rows if int(row.get("breached_trade_count", 0)) == 0]
         breached_capacity_rows = [row for row in capacity_rows if int(row.get("breached_trade_count", 0)) > 0]
-        baseline_aum = max(float(self.config.strategy.get("capacity_baseline_aum", self.config.strategy.get("slippage_notional", 1_000_000.0))), 1.0)
+        baseline_aum = self._baseline_aum()
         return {
             "backtest_summary": summary,
             "benchmark_mode": str(self.config.strategy.get("benchmark_mode", "ff_total_return")),
@@ -514,19 +514,12 @@ class PerformanceReporter:
         benchmark_total_return = float(backtest_summary.get("benchmark_total_return", 0.0))
         gross_total_return = float(backtest_summary.get("gross_total_return", 0.0))
         total_short_borrow_cost = float(backtest_summary.get("total_short_borrow_cost", 0.0))
-        baseline_aum = max(float(self.config.strategy.get("capacity_baseline_aum", self.config.strategy.get("slippage_notional", 1_000_000.0))), 1.0)
+        baseline_aum = self._baseline_aum()
         aum_levels = self._capacity_aum_levels(baseline_aum)
         slippage_model = str(self.config.strategy.get("slippage_model", "fixed")).strip().lower() or "fixed"
-        commission_bps = max(float(self.config.strategy.get("commission_cost_bps", 0.0)), 0.0)
-        slippage_cost_bps = max(
-            float(
-                self.config.strategy.get(
-                    "slippage_cost_bps",
-                    max(float(self.config.strategy.get("transaction_cost_bps", 10.0)) - commission_bps, 0.0),
-                )
-            ),
-            0.0,
-        )
+        costs = resolve_backtest_costs(self.config.strategy)
+        commission_bps = costs["commission_cost_bps"]
+        slippage_cost_bps = costs["slippage_cost_bps"]
         slippage_impact_bps_per_adv = max(float(self.config.strategy.get("slippage_impact_bps_per_adv", 50.0)), 0.0)
         slippage_adv_floor = max(float(self.config.strategy.get("slippage_adv_floor", 100_000.0)), 1.0)
         max_trade_participation_ratio = max(float(self.config.strategy.get("max_trade_participation_ratio", 0.0)), 0.0)
@@ -754,6 +747,12 @@ class PerformanceReporter:
             if levels:
                 return levels
         return [baseline_aum * multiple for multiple in (0.25, 0.5, 1.0, 2.0, 5.0)]
+
+    def _baseline_aum(self) -> float:
+        return max(
+            float(self.config.strategy.get("capacity_baseline_aum", self.config.strategy.get("slippage_notional", 1_000_000.0))),
+            1.0,
+        )
 
     def _slippage_impact_exponent(self) -> float:
         configured = self.config.strategy.get("slippage_impact_exponent")

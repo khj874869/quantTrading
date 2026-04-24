@@ -29,6 +29,22 @@ class PathOverrideTest(unittest.TestCase):
         self.assertEqual(overridden.paths["output_dir"], "alt-output")
         self.assertEqual(overridden.paths["demo_site_dir"], "alt-demo")
 
+    def test_config_can_override_generic_sections_without_mutating_original(self) -> None:
+        config = Config(
+            path=Path("config.json"),
+            raw={
+                "paths": {"output_dir": "output"},
+                "strategy": {"holding_count": 10, "beta_method": "ols"},
+            },
+        )
+
+        overridden = config.with_strategy_overrides(holding_count=25)
+
+        self.assertEqual(config.strategy["holding_count"], 10)
+        self.assertEqual(config.strategy["beta_method"], "ols")
+        self.assertEqual(overridden.strategy["holding_count"], 25)
+        self.assertEqual(overridden.strategy["beta_method"], "ols")
+
     def test_cli_output_dir_override_routes_artifacts(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:

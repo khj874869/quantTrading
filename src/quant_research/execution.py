@@ -7,7 +7,7 @@ from .config import Config
 from .exports import export_order_blotter
 from .pipeline import PreparedData
 from .strategy import MultiSignalStrategy
-from .utils import read_csv_dicts, write_csv_dicts
+from .utils import read_csv_dicts, resolve_order_blotter_settings, write_csv_dicts
 
 
 class ExecutionReconciler:
@@ -18,17 +18,13 @@ class ExecutionReconciler:
 
     def run(self) -> tuple[list[Path], dict[str, object]]:
         strategy = MultiSignalStrategy(self.config.strategy)
+        blotter_settings = resolve_order_blotter_settings(self.config.strategy)
         blotter_outputs = export_order_blotter(
             self.prepared_data,
             strategy,
             self.output_dir,
-            blotter_notional=float(
-                self.config.strategy.get(
-                    "order_blotter_notional",
-                    self.config.strategy.get("slippage_notional", self.config.strategy.get("capacity_baseline_aum", 1_000_000.0)),
-                )
-            ),
-            order_type=str(self.config.strategy.get("order_blotter_order_type", "MOC")),
+            blotter_notional=float(blotter_settings["blotter_notional"]),
+            order_type=str(blotter_settings["order_type"]),
         )
         fills_path = self._fills_path()
         if not fills_path.exists():
