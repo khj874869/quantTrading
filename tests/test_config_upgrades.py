@@ -41,6 +41,20 @@ class ConfigUpgradeTest(unittest.TestCase):
         self.assertEqual(config.paths["output_dir"], "output")
         self.assertEqual(config.strategy["holding_count"], 5)
 
+    def test_sample_toml_matches_sample_json(self) -> None:
+        self._assert_toml_matches_json("sample_config")
+
+    def test_example_toml_matches_example_json(self) -> None:
+        self._assert_toml_matches_json("example_config")
+
+    def _assert_toml_matches_json(self, stem: str) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+
+        json_config = Config.load(repo_root / "config" / f"{stem}.json")
+        toml_config = Config.load(repo_root / "config" / f"{stem}.toml")
+
+        self.assertEqual(toml_config.raw, json_config.raw)
+
     def test_resolve_path_expands_environment_variables(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

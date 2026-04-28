@@ -13,6 +13,7 @@
 python -m pip install -e .[dev]
 quant-research --version
 quant-research doctor --config config/sample_config.json --strict
+quant-research doctor --config config/sample_config.toml --strict
 ```
 
 ## Release Checklist
@@ -23,9 +24,16 @@ Run this before shipping a version to a customer:
 python -m build
 pytest -q
 quant-research doctor --config config/sample_config.json --strict --json
+quant-research doctor --config config/sample_config.toml --strict --json
 quant-research backtest --config config/sample_config.json --output-dir test_output/release-output
 quant-research report --config config/sample_config.json --output-dir test_output/release-output
 quant-research publish-demo --config config/sample_config.json --output-dir test_output/release-output --demo-site-dir test_output/release-demo
+```
+
+If `python -m build` fails on a Windows shell because isolated build bootstrap emits non-UTF-8 output, rerun locally with:
+
+```bash
+python -m build --sdist --wheel --no-isolation
 ```
 
 Then confirm:

@@ -42,11 +42,12 @@ The stack currently supports:
 
 ## Quick Start
 
-Install with Python 3.11+ and run from the repo root.
+Install with Python 3.11+ and run from the repo root. CI verifies Python 3.11 through 3.14.
 
 ```bash
 python -m pip install -e .[dev]
 quant-research doctor --config config/sample_config.json
+quant-research doctor --config config/sample_config.toml
 quant-research backtest --config config/sample_config.json
 quant-research report --config config/sample_config.json
 quant-research reconcile --config config/sample_config.json
@@ -59,10 +60,10 @@ The sample config is self-contained and intended as the fastest way to inspect t
 If you prefer the module entrypoint after installation, `python -m quant_research ...` is also supported.
 The legacy `python run_quant.py ...` wrapper remains available for source checkouts that have not been installed yet.
 You can also set `QUANT_RESEARCH_CONFIG=config/sample_config.json` to avoid repeating `--config` on every command.
-Both JSON and TOML config files are supported, so `--config config/sample_config.toml` works as long as the file uses the same section layout.
+Both JSON and TOML config files are supported, so `--config config/sample_config.toml` and `--config config/example_config.toml` work as long as the file uses the same section layout.
 Use `quant-research --version` to confirm the installed CLI version.
 Use `--output-dir` and `--demo-site-dir` when you want scratch runs or CI artifacts without editing the base config file.
-Run `python -m build` when you want to verify the sdist and wheel before publishing or attaching artifacts.
+Run `python -m build` when you want to verify the sdist and wheel before publishing or attaching artifacts. On Windows shells with a non-UTF-8 locale, `python -m build --sdist --wheel --no-isolation` can be a safer local fallback when isolated build bootstrapping emits non-UTF-8 tool output.
 
 If you want a hosted demo, the repository now includes a GitHub Pages workflow at `.github/workflows/deploy-pages-demo.yml` that builds the sample bundle and deploys `docs/demo/`.
 The workflow asks GitHub to enable Pages for Actions-based publishing and always uploads the built site as an artifact; if your repository policy blocks automatic enablement, enable Pages manually in repository settings and select GitHub Actions as the source.

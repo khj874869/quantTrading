@@ -13,6 +13,14 @@ The format is intentionally simple:
 
 - No unreleased entries yet.
 
+## 0.4.1 - 2026-04-28
+
+- Added `config/sample_config.toml` as a TOML twin of the self-contained JSON sample config.
+- Added `config/example_config.toml` so both shipped JSON configs have TOML equivalents.
+- Added regression coverage to keep the sample JSON and TOML configs in sync.
+- Expanded packaging metadata and CI declarations to include Python 3.14.
+- Added a Windows packaging CI job that verifies the documented `--no-isolation` local build fallback.
+
 ## 0.4.0 - 2026-04-24
 
 - Added TOML config support alongside JSON config loading.

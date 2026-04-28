@@ -1,0 +1,172 @@
+[paths]
+data_dir = "data"
+output_dir = "output"
+compustat_quarterly = "data/sample_compustat_quarterly.csv"
+crsp_daily = "data/sample_crsp_daily.csv"
+ccm_link = "data/sample_ccm_link.csv"
+ibes_link = "data/sample_ibes_link.csv"
+ibes_summary = "data/sample_ibes_summary.csv"
+ibes_surprise = "data/sample_ibes_surprise.csv"
+kpss_patent = "data/sample_kpss_patent.csv"
+ff_factors = "data/sample_ff_factors.csv"
+fred_dgs10 = "data/sample_fred_dgs10.csv"
+cboe_vix = "data/sample_cboe_vix.csv"
+fmp_grades = "data/sample_fmp_grades.csv"
+broker_fills = "data/sample_broker_fills.csv"
+demo_site_dir = "docs/demo"
+
+[api]
+fred_api_key = ""
+fmp_api_key = ""
+fmp_symbols = ["AAA", "BBB"]
+cboe_vix_csv_url = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+
+[wrds]
+host = "wrds-pgdata.wharton.upenn.edu"
+port = 9737
+database = "wrds"
+sslmode = "require"
+username_env = "WRDS_USERNAME"
+password_env = "WRDS_PASSWORD"
+fetch_size = 5000
+
+[wrds.placeholders]
+IBES_CRSP_LINK_TABLE = "wrdsapps.ibcrsphist"
+IBES_SUMMARY_TABLE = "ibes.statsum_epsus"
+IBES_SURPRISE_TABLE = "ibes.surpsum_epsus"
+KPSS_PATENT_TABLE = "kpss_us_patents"
+FF_DAILY_FACTORS_TABLE = "ff_all.factors_daily"
+
+[cache]
+enabled = true
+cache_dir = "output/cache"
+
+[sweep.strategy_grid]
+beta_method = ["ols", "ewma"]
+risk_penalty_downside_beta_weight = [0.0, 0.15]
+risk_penalty_idio_vol_weight = [0.0, 0.10]
+
+[walk_forward]
+selection_metric = "information_ratio"
+leaderboard_top_n = 3
+leaderboard_sort_by = "consistency_score"
+leaderboard_min_selection_rate = 0.0
+leaderboard_min_positive_window_rate = 0.0
+
+[[walk_forward.windows]]
+train_start = "2024-01-01"
+train_end = "2025-03-31"
+test_start = "2025-04-01"
+test_end = "2025-04-30"
+
+[strategy]
+rebalance_frequency = "monthly"
+holding_count = 1
+score_field = "risk_adjusted_score"
+feature_zscore_method = "robust"
+feature_winsor_quantile = 0.05
+risk_zscore_method = "robust"
+risk_winsor_quantile = 0.05
+liquidity_lookback_days = 20
+liquidity_fallback_adv_to_mcap = 0.02
+entry_score_threshold = 0.1
+entry_score_threshold_dynamic_scale = 0.15
+entry_turnover_penalty_per_weight = 0.15
+entry_liquidity_penalty_scale = 0.002
+entry_liquidity_field = "liquidity_ratio"
+entry_liquidity_floor = 0.01
+portfolio_construction = "heuristic"
+weighting_scheme = "score_inverse_vol"
+risk_weight_field = "idio_vol"
+risk_weight_floor = 0.1
+score_weight_floor = 0.05
+optimizer_risk_aversion = 0.5
+optimizer_covariance_penalty = 0.0
+optimizer_covariance_fields = ["beta", "downside_beta", "size", "sector"]
+optimizer_turnover_penalty = 0.25
+optimizer_iterations = 200
+optimizer_step_size = 0.05
+incumbent_score_bonus = 0.1
+max_position_weight = 0.2
+liquidity_position_cap_ratio = 1.0
+liquidity_position_cap_field = "avg_dollar_volume"
+liquidity_position_cap_floor = 100000.0
+liquidity_position_cap_notional = 1000000.0
+max_turnover_per_rebalance = 0.25
+adaptive_turnover_budget_enabled = true
+adaptive_turnover_budget_floor = 0.15
+adaptive_turnover_budget_ceiling = 0.35
+adaptive_turnover_budget_score_scale = 0.2
+adaptive_turnover_budget_recent_turnover_scale = 1.0
+adaptive_turnover_budget_lookback_rebalances = 3
+slippage_model = "fixed"
+slippage_notional = 1000000.0
+slippage_adv_floor = 100000.0
+slippage_impact_bps_per_adv = 50.0
+slippage_impact_exponent = 1.0
+capacity_aum_levels = [250000.0, 500000.0, 1000000.0, 2000000.0, 5000000.0]
+order_blotter_notional = 1000000.0
+order_blotter_order_type = "MOC"
+execution_reconcile_top_n = 10
+max_trade_participation_ratio = 0.25
+execution_backlog_carry_forward_enabled = true
+execution_backlog_decay = 1.0
+execution_days_per_rebalance = 1
+execution_priority_backlog_buy = 2.0
+execution_priority_existing_buy = 1.5
+execution_priority_new_buy = 1.0
+execution_priority_backlog_sell = 2.0
+execution_priority_existing_sell = 1.5
+execution_priority_new_sell = 1.0
+execution_backlog_age_half_life_rebalances = 2.0
+cash_carry_enabled = true
+benchmark_mode = "ff_total_return"
+long_short = false
+short_borrow_cost_bps_annual = 0.0
+short_borrow_cost_field = "short_borrow_cost_bps_annual"
+short_min_avg_dollar_volume = 0.0
+short_min_market_cap = 0.0
+short_min_liquidity_ratio = 0.0
+short_locate_required = false
+short_locate_available_field = "short_locate_available"
+short_locate_score_field = "short_locate_score"
+short_locate_min_score = 0.0
+short_max_borrow_cost_bps_annual = 0.0
+short_exclude_sectors = []
+use_rdq = true
+sector_neutral = true
+beta_neutral = true
+benchmark_hedge = true
+constraint_neutral = false
+constraint_neutral_factors = ["beta", "downside_beta", "idio_vol", "size", "sector"]
+constraint_ridge = 1e-08
+beta_method = "ols"
+beta_lookback_days = 126
+beta_ewma_halflife_days = 63
+min_beta_observations = 60
+beta_shrinkage = 0.0
+beta_shrinkage_target = 1.0
+risk_penalty_downside_beta_weight = 0.15
+risk_penalty_idio_vol_weight = 0.10
+regime_risk_scaling_enabled = true
+regime_vix_threshold = 30.0
+regime_vix_penalty_multiplier = 1.5
+regime_macro_threshold = 0.5
+regime_macro_penalty_multiplier = 1.25
+regime_penalty_cap = 2.5
+top_quantile = 0.5
+bottom_quantile = 0.5
+report_lag_days = 45
+commission_cost_bps = 2.0
+slippage_cost_bps = 8.0
+transaction_cost_bps = 10.0
+vix_de_risk_level = 30.0
+vix_flatten_level = 40.0
+min_price = 5.0
+min_market_cap = 100000000.0
+min_avg_dollar_volume = 0.0
+universe_include_sectors = []
+universe_exclude_sectors = []
+universe_top_n_by_market_cap = 0
+start_date = "2024-01-01"
+end_date = "2025-12-31"
