@@ -57,7 +57,7 @@ class DistributionArtifactsTest(unittest.TestCase):
 
         self.assertIn("quant_research/py.typed", names)
         self.assertTrue(
-            any(name.endswith(".dist-info/LICENSE.txt") for name in names),
+            any(name.endswith((".dist-info/LICENSE.txt", ".dist-info/licenses/LICENSE.txt")) for name in names),
             "wheel is missing LICENSE.txt",
         )
 
