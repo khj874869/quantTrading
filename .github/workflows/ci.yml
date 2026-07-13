@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,9 +30,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install package
-        run: python -m pip install -e .[dev]
+        run: python -m pip install -e .[dev] wheel
 
       - name: Verify CLI version
         run: quant-research --version
@@ -49,7 +54,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install package
-        run: python -m pip install -e .[dev]
+        run: python -m pip install -e .[dev] wheel
 
       - name: Build distribution artifacts
         run: python -m build --sdist --wheel
@@ -95,7 +100,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install package
-        run: python -m pip install -e .[dev]
+        run: python -m pip install -e .[dev] wheel
 
       - name: Build distribution artifacts on Windows
         shell: pwsh
